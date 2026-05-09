@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idea2repo"
+version = "0.1.0"
+description = "Generate CCF-A readiness research repositories from early research ideas."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Idea2Repo Contributors" }
+]
+
+[project.scripts]
+idea2repo = "idea2repo.cli:main"
+
+[tool.setuptools.package-data]
+idea2repo = ["data/*.json"]
