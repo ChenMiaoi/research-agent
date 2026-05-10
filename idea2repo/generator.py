@@ -9,6 +9,7 @@ from datetime import date
 from io import StringIO
 from pathlib import Path
 
+from .literature import PaperRecord, literature_tasks_md, references_bib, related_work_csv
 from .permissions import Operation, PermissionPolicy, default_policy
 from .providers import provider_schema_json, safe_provider_report
 from .scoring import Diagnosis, ScoreBreakdown, diagnose_idea
@@ -36,6 +37,8 @@ def generate_research_repo(
     force: bool = False,
     created_at: str | None = None,
     permission_policy: PermissionPolicy | None = None,
+    verified_papers: list[PaperRecord] | None = None,
+    literature_tasks: list[str] | None = None,
 ) -> GeneratedProject:
     """Generate a CCF-A readiness repository for a raw research idea."""
 
@@ -64,6 +67,8 @@ def generate_research_repo(
         timeline_weeks,
         resources or [],
         workspace.as_dict(),
+        verified_papers or [],
+        literature_tasks or [],
     )
 
     written: list[Path] = []
@@ -162,6 +167,8 @@ def _regenerate_from_request(
         timeline_weeks,
         resources,
         workspace,
+        [],
+        [],
     )
     written: list[Path] = []
     for relative_path, content in files.items():
@@ -217,6 +224,8 @@ def _build_files(
     timeline_weeks: int,
     resources: list[str],
     workspace: dict[str, object] | None = None,
+    verified_papers: list[PaperRecord] | None = None,
+    literature_tasks: list[str] | None = None,
 ) -> dict[Path, str]:
     primary_route = diagnosis.routes[0]
     primary_domain = primary_route.domain
@@ -265,59 +274,9 @@ def _build_files(
         Path("docs/survey/topic_clusters.md"): _topic_clusters(),
         Path("docs/survey/trend_analysis.md"): _trend_analysis(),
         Path("docs/survey/open_problems.md"): _open_problems(diagnosis),
-        Path("docs/reference/references.bib"): _references_bib(),
-        Path("docs/reference/related_work_matrix.csv"): _csv(
-            [
-                [
-                    "paper_id",
-                    "title",
-                    "venue",
-                    "year",
-                    "authors",
-                    "main_problem",
-                    "core_method",
-                    "main_claim",
-                    "evidence",
-                    "datasets",
-                    "baselines",
-                    "metrics",
-                    "strengths",
-                    "weaknesses",
-                    "limitations",
-                    "relation_to_current_idea",
-                    "difference_from_current_idea",
-                    "collision_risk",
-                    "useful_for",
-                    "source_url",
-                    "bibtex_key",
-                    "bibtex",
-                ],
-                [
-                    "TODO",
-                    "Add only verified papers",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "Unknown until verified",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                    "TODO",
-                ],
-            ]
-        ),
+        Path("docs/reference/references.bib"): references_bib(verified_papers or []),
+        Path("docs/reference/related_work_matrix.csv"): related_work_csv(verified_papers or []),
+        Path("docs/reference/literature_search_tasks.md"): literature_tasks_md(literature_tasks or []),
         Path("docs/reference/claim_evidence_matrix.csv"): _csv(
             [
                 ["claim", "required_evidence", "planned_artifact", "status"],

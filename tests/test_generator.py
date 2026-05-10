@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from idea2repo.generator import generate_research_repo, resume_research_repo, slugify
+from idea2repo.literature import PaperRecord
 from idea2repo.permissions import Operation, PermissionDeniedError, PermissionPolicy
 from idea2repo.state import status, validate
 
@@ -63,6 +64,7 @@ class GeneratorTests(unittest.TestCase):
                 "docs/survey/open_problems.md",
                 "docs/reference/references.bib",
                 "docs/reference/related_work_matrix.csv",
+                "docs/reference/literature_search_tasks.md",
                 "docs/reference/claim_evidence_matrix.csv",
                 "docs/reference/paper_notes/README.md",
                 "docs/reference/pdfs/README.md",
@@ -278,6 +280,60 @@ class GeneratorTests(unittest.TestCase):
             current = status(output)
             self.assertEqual(current.total_artifacts, current.present_artifacts)
             self.assertEqual(validate(output), ())
+
+    def test_generate_research_repo_writes_verified_literature_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "verified-lit"
+            paper = PaperRecord(
+                paper_id="https://openalex.org/W123",
+                title="Traceable Agent Memory Benchmarks",
+                venue="TestConf",
+                year=2025,
+                authors=("Ada Lovelace", "Alan Turing"),
+                source_url="https://openalex.org/W123",
+                bibtex_key="lovelace2025traceable",
+                openalex_id="https://openalex.org/W123",
+            )
+            generate_research_repo(
+                "agent memory benchmark",
+                output,
+                verified_papers=[paper],
+                literature_tasks=["Network disabled fallback should not be needed"],
+                created_at="2026-05-10",
+            )
+
+            references = (output / "docs/reference/references.bib").read_text()
+            self.assertIn("@inproceedings{lovelace2025traceable", references)
+            self.assertIn("Traceable Agent Memory Benchmarks", references)
+            related = (output / "docs/reference/related_work_matrix.csv").read_text()
+            self.assertIn("https://openalex.org/W123", related)
+            self.assertIn("Ada Lovelace; Alan Turing", related)
+
+    def test_generate_research_repo_filters_invalid_literature_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "invalid-lit"
+            paper = PaperRecord(
+                paper_id="bad",
+                title="Untraceable Paper",
+                venue="BadConf",
+                year=2025,
+                authors=("Mallory",),
+                source_url="not-a-url",
+                bibtex_key="bad2025",
+            )
+            generate_research_repo(
+                "agent memory benchmark",
+                output,
+                verified_papers=[paper],
+                created_at="2026-05-10",
+            )
+
+            references = (output / "docs/reference/references.bib").read_text()
+            related = (output / "docs/reference/related_work_matrix.csv").read_text()
+            self.assertIn("Do not invent", references)
+            self.assertNotIn("Untraceable Paper", references)
+            self.assertIn("Add only verified papers", related)
+            self.assertNotIn("Untraceable Paper", related)
 
     def test_resume_restores_missing_files_without_overwriting_user_edits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
