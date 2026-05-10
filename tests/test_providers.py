@@ -54,7 +54,42 @@ class ProviderTests(unittest.TestCase):
     def test_secret_detector_catches_common_material(self) -> None:
         self.assertTrue(contains_secret_material("Authorization: Bearer abc"))
         self.assertTrue(contains_secret_material("sk-live-secret"))
+        self.assertTrue(contains_secret_material("GITHUB_TOKEN=ghp_local_token"))
+        self.assertTrue(contains_secret_material("GITHUB_TOKEN=ghs_local_token"))
+        self.assertTrue(contains_secret_material("GITHUB_TOKEN=ghr_local_token"))
+        self.assertTrue(contains_secret_material("AWS_SECRET_ACCESS_KEY=local-secret"))
+        self.assertTrue(contains_secret_material("DATABASE_URL=postgres://user:pass@example/db"))
+        self.assertTrue(contains_secret_material("DATABASE_URL: postgres://user:pass@example/db"))
+        self.assertTrue(
+            contains_secret_material(
+                "SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://user:pass@example/db"
+            )
+        )
+        self.assertTrue(
+            contains_secret_material(
+                "SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://user:pass@example/db"
+            )
+        )
+        self.assertTrue(contains_secret_material("DB_URI=mysql+pymysql://user:pass@example/db"))
+        self.assertTrue(contains_secret_material('{"api_key":"abc123"}'))
+        self.assertTrue(contains_secret_material('{"client-secret":"abc123"}'))
+        self.assertTrue(contains_secret_material('{"github-token":"abc123"}'))
+        self.assertTrue(contains_secret_material('{"x-api-key":"abc123"}'))
+        self.assertTrue(contains_secret_material("password: hunter2"))
+        self.assertTrue(contains_secret_material('{"database_url":"postgres://user:pass@example/db"}'))
+        self.assertTrue(
+            contains_secret_material(
+                '{"sqlalchemy_database_uri":"postgresql+psycopg2://user:pass@example/db"}'
+            )
+        )
+        self.assertTrue(
+            contains_secret_material(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----"
+            )
+        )
+        self.assertTrue(contains_secret_material("machine github.com login alice password local-secret"))
         self.assertFalse(contains_secret_material("OPENAI_API_KEY: set"))
+        self.assertFalse(contains_secret_material("OPENAI_API_KEY="))
 
 
 if __name__ == "__main__":

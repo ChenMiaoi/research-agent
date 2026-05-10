@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
@@ -172,14 +173,36 @@ def contains_secret_material(text: str) -> bool:
     lowered = text.casefold()
     markers = (
         "sk-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
         "session_token",
         "refresh_token",
         "access_token=",
+        "github_token=",
+        "aws_secret_access_key=",
         "cookie:",
         "set-cookie:",
         "authorization: bearer",
+        "-----begin openssh private key-----",
+        "-----begin rsa private key-----",
+        "-----begin dsa private key-----",
+        "-----begin ec private key-----",
+        "-----begin private key-----",
     )
-    return any(marker in lowered for marker in markers)
+    if any(marker in lowered for marker in markers):
+        return True
+    assignment_patterns = (
+        r"\b[a-z0-9_-]*(?:api[_-]?key|token|secret|password)[ \t]*[=:][ \t]*(?!set\b|unset\b|<redacted\b)['\"]?[^'\"\s#,\]}]+",
+        r"['\"][a-z0-9_-]*(?:api[_-]?key|token|secret|password)['\"][ \t]*:[ \t]*['\"](?!set['\"]|unset['\"]|<redacted)[^'\"]+['\"]",
+        r"\b[a-z0-9_-]*(?:database|db)[a-z0-9_-]*(?:url|uri)[ \t]*[=:][ \t]*['\"]?[a-z][a-z0-9+.-]*://[^'\"\s]+:[^'\"\s]+@",
+        r"['\"][a-z0-9_-]*(?:database|db)[a-z0-9_-]*(?:url|uri)['\"][ \t]*:[ \t]*['\"][a-z][a-z0-9+.-]*://[^'\"]+:[^'\"]+@[^'\"]+['\"]",
+        r"\bmachine\s+\S+\s+login\s+\S+\s+password\s+\S+",
+    )
+    return any(re.search(pattern, lowered) for pattern in assignment_patterns)
 
 
 def _required_environment(mode: ProviderMode) -> list[str]:

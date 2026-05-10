@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .generator import generate_research_repo, resume_research_repo
+from .github_export import build_github_export_plan
 from .literature import search_literature
 from .providers import safe_provider_report, validate_provider_config
 from .scoring import diagnose_idea
@@ -231,16 +232,15 @@ def create_app() -> FastAPI:
 
     @app.post("/github/dry-run")
     def github_dry_run(request: GithubDryRunRequest) -> dict[str, object]:
-        root = _existing_root(request.output)
-        issues = _github_issue_payloads(root) if request.create_issues else []
-        return {
-            "dry_run": True,
-            "repo_name": request.repo_name or root.name,
-            "source": str(root),
-            "issues": issues,
-            "would_create_issues": len(issues),
-            "publish_performed": False,
-        }
+        try:
+            plan = build_github_export_plan(
+                request.output,
+                repo_name=request.repo_name,
+                create_issues=request.create_issues,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return plan.public_dict()
 
     return app
 
@@ -350,34 +350,3 @@ def _review_clusters(reviews: list[str]) -> list[dict[str, str]]:
         if count:
             clusters.append({"category": category, "mentions": str(count)})
     return clusters
-
-
-def _github_issue_payloads(root: Path) -> list[dict[str, str]]:
-    issues: list[dict[str, str]] = []
-    todo_path = root / "docs/execution_plan/todo.md"
-    if todo_path.exists():
-        for line in todo_path.read_text(encoding="utf-8").splitlines():
-            item = line.removeprefix("- ").strip()
-            if item and line.startswith("- "):
-                issues.append(
-                    {
-                        "title": f"Research task: {item[:80]}",
-                        "body": f"Source: `docs/execution_plan/todo.md`\n\n{item}",
-                        "labels": "research,todo",
-                    }
-                )
-    milestone_path = root / "docs/execution_plan/milestones.md"
-    if milestone_path.exists():
-        for line in milestone_path.read_text(encoding="utf-8").splitlines():
-            if not line.startswith("| M"):
-                continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if len(cells) >= 2:
-                issues.append(
-                    {
-                        "title": f"Milestone: {cells[0]} {cells[1]}",
-                        "body": f"Source: `docs/execution_plan/milestones.md`\n\nExit criteria: {cells[2] if len(cells) > 2 else 'TODO'}",
-                        "labels": "research,milestone",
-                    }
-                )
-    return issues

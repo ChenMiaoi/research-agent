@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from .generator import generate_research_repo, resume_research_repo
+from .github_export import build_github_export_plan, publish_with_gh
 from .permissions import PermissionDeniedError, PermissionPolicy
 from .providers import load_provider_config, safe_provider_report, validate_provider_config
 from .state import status as project_status
@@ -99,12 +100,32 @@ def build_command_parser() -> argparse.ArgumentParser:
     venues = subparsers.add_parser("venues", help="Validate or inspect the CCF-A venue database.")
     venues.add_argument("action", choices=("validate",))
     venues.add_argument("--path", help="Optional venue database JSON path.")
+
+    github = subparsers.add_parser("github", help="Preview or publish GitHub export payloads.")
+    github.add_argument("action", choices=("dry-run", "publish"))
+    github.add_argument("--output", default="generated_repos/idea2repo-project")
+    github.add_argument("--repo-name", default="")
+    github.add_argument(
+        "--no-issues",
+        action="store_true",
+        help="Skip issue payload generation.",
+    )
+    _add_permission_flags(github)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    command_names = {"generate", "status", "resume", "validate", "doctor", "provider", "venues"}
+    command_names = {
+        "generate",
+        "status",
+        "resume",
+        "validate",
+        "doctor",
+        "provider",
+        "venues",
+        "github",
+    }
     parser = build_command_parser() if argv[:1] and argv[0] in command_names else build_parser()
     args = parser.parse_args(argv)
     try:
@@ -175,6 +196,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             total = sum(len(domain.venue_records) for domain in database.domains.values())
             print(f"Venue database valid: {database.version} ({total} records)")
+            return 0
+        if command == "github":
+            plan = build_github_export_plan(
+                args.output,
+                repo_name=args.repo_name,
+                create_issues=not args.no_issues,
+            )
+            if args.action == "dry-run":
+                print(plan.json(), end="")
+                return 0
+            result = publish_with_gh(plan, permission_policy=_policy_from_args(args))
+            print(result.json(), end="")
             return 0
     except (FileExistsError, ValueError, FileNotFoundError, PermissionDeniedError) as exc:
         print(f"error: {exc}", file=sys.stderr)

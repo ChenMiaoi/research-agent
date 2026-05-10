@@ -94,6 +94,21 @@ class CliTests(unittest.TestCase):
     def test_venues_validate_returns_success(self) -> None:
         self.assertEqual(main(["venues", "validate"]), 0)
 
+    def test_github_dry_run_returns_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github-cli"
+            self.assertEqual(main(["generate", "test idea", "--output", str(output)]), 0)
+            self.assertEqual(
+                main(["github", "dry-run", "--output", str(output), "--repo-name", "demo repo"]),
+                0,
+            )
+
+    def test_github_publish_is_denied_without_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github-publish"
+            self.assertEqual(main(["generate", "test idea", "--output", str(output)]), 0)
+            self.assertEqual(main(["github", "publish", "--output", str(output)]), 2)
+
     def test_main_returns_error_for_non_empty_output_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "out"

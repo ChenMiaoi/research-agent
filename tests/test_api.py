@@ -177,6 +177,8 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(payload["repo_name"], "demo-repo")
             self.assertGreater(payload["would_create_issues"], 0)
             self.assertIn("title", payload["issues"][0])
+            self.assertEqual(payload["issues"][0]["labels"], ["research", "todo"])
+            self.assertIn("pull_request", payload)
 
 
 if __name__ == "__main__":
