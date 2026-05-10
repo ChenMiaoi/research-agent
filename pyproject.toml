@@ -8,6 +8,12 @@ version = "0.1.0"
 description = "Generate CCF-A readiness research repositories from early research ideas."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "pydantic>=2",
+  "uvicorn>=0.30",
+]
 license = { text = "MIT" }
 authors = [
   { name = "Idea2Repo Contributors" }
