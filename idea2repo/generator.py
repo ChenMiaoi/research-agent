@@ -17,6 +17,7 @@ from .scoring import Diagnosis, ScoreBreakdown, diagnose_idea
 from .security import safe_security_reframe, security_guardrail_markdown
 from .state import RUN_LOG_PATH, append_run_log, read_manifest, write_manifest
 from .workspace import inspect_workspace
+from .workflow import run_workflow, workflow_summary
 
 
 @dataclass(frozen=True)
@@ -349,6 +350,7 @@ def _build_files(
         Path("docs/runtime/provider_config.md"): _provider_config(),
         Path("docs/runtime/provider_schema.json"): provider_schema_json(),
         Path("docs/runtime/workspace_snapshot.md"): _workspace_snapshot(workspace or {}),
+        Path("docs/workflow/README.md"): workflow_summary(),
         Path("paper/main.tex"): _main_tex(project_name),
         Path("paper/macros.tex"): _macros_tex(),
         Path("paper/sections/00_abstract.tex"): _section_tex("Abstract"),
@@ -392,6 +394,7 @@ def _build_files(
                 Path("tests/smoke.test.ts"): _ts_smoke_test(),
             }
         )
+    files.update({Path(path): content for path, content in run_workflow(diagnosis).items()})
     return files
 
 

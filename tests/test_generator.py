@@ -84,6 +84,16 @@ class GeneratorTests(unittest.TestCase):
                 "docs/runtime/provider_config.md",
                 "docs/runtime/provider_schema.json",
                 "docs/runtime/workspace_snapshot.md",
+                "docs/workflow/README.md",
+                "docs/workflow/venue_routing.md",
+                "docs/workflow/literature_radar.md",
+                "docs/workflow/novelty_check.md",
+                "docs/workflow/scorecard.md",
+                "docs/workflow/experiment_design.md",
+                "docs/workflow/reviewer_simulation.md",
+                "docs/workflow/paper_skeleton.md",
+                "docs/workflow/rebuttal_plan.md",
+                "docs/workflow/weekly_management.md",
                 "paper/main.tex",
                 "paper/macros.tex",
                 "paper/figures/.gitkeep",
@@ -267,6 +277,8 @@ class GeneratorTests(unittest.TestCase):
 
             workspace_snapshot = (output / "docs/runtime/workspace_snapshot.md").read_text()
             self.assertIn("# Workspace Snapshot", workspace_snapshot)
+            workflow_readme = (output / "docs/workflow/README.md").read_text()
+            self.assertIn("workflow-first skills", workflow_readme)
 
             provider_config = (output / "docs/runtime/provider_config.md").read_text()
             self.assertIn("Offline mode", provider_config)
