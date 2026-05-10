@@ -3,8 +3,11 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from idea2repo.generator import generate_research_repo, slugify
+from idea2repo.generator import generate_research_repo, resume_research_repo, slugify
+from idea2repo.permissions import Operation, PermissionDeniedError, PermissionPolicy
+from idea2repo.state import status, validate
 
 
 class GeneratorTests(unittest.TestCase):
@@ -72,6 +75,7 @@ class GeneratorTests(unittest.TestCase):
                 "docs/meeting/advisor_report.md",
                 "docs/runtime/platform_notes.md",
                 "docs/runtime/provider_config.md",
+                "docs/runtime/workspace_snapshot.md",
                 "paper/main.tex",
                 "paper/macros.tex",
                 "paper/figures/.gitkeep",
@@ -110,6 +114,8 @@ class GeneratorTests(unittest.TestCase):
                 "docker/docker-compose.yml",
                 ".github/workflows/README.md",
                 ".github/ISSUE_TEMPLATE/research_task.md",
+                ".idea2repo/manifest.json",
+                ".idea2repo/run_log.jsonl",
             ]
 
             self.assertEqual(result.root, output)
@@ -232,6 +238,101 @@ class GeneratorTests(unittest.TestCase):
             plan = (output / "docs/execution_plan/16_week_plan.md").read_text()
             self.assertIn("# 16 Week Plan", plan)
             self.assertIn("single-researcher, no-gpu", plan)
+
+            manifest = (output / ".idea2repo/manifest.json").read_text()
+            self.assertIn('"project_name": "llm-memory"', manifest)
+            self.assertIn('"permissions"', manifest)
+            self.assertIn('"workspace"', manifest)
+
+            workspace_snapshot = (output / "docs/runtime/workspace_snapshot.md").read_text()
+            self.assertIn("# Workspace Snapshot", workspace_snapshot)
+
+            current = status(output)
+            self.assertEqual(current.total_artifacts, current.present_artifacts)
+            self.assertEqual(validate(output), ())
+
+    def test_resume_restores_missing_files_without_overwriting_user_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "resume-test"
+            generate_research_repo("agent memory compression", output, created_at="2026-05-10")
+            readme = output / "README.md"
+            readme.write_text("user edited readme", encoding="utf-8")
+            survey = output / "docs/survey/survey.md"
+            survey.unlink()
+
+            result = resume_research_repo(output)
+
+            self.assertEqual(readme.read_text(encoding="utf-8"), "user edited readme")
+            self.assertTrue(survey.exists())
+            self.assertIn(survey, result.files)
+            current = status(output)
+            self.assertNotIn("docs/survey/survey.md", current.missing_artifacts)
+            self.assertIn("README.md", current.modified_artifacts)
+
+    def test_resume_reuses_manifest_state_for_sensitive_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "resume-state"
+            generate_research_repo("agent memory compression", output, created_at="2001-01-01")
+            for relative_path in ("project.yaml", "docs/runtime/workspace_snapshot.md"):
+                (output / relative_path).unlink()
+
+            class FakeWorkspace:
+                def as_dict(self) -> dict[str, object]:
+                    return {
+                        "cwd": "fake-cwd",
+                        "git_root": "fake-root",
+                        "git_branch": "fake-branch",
+                        "git_status_short": ["M fake.py"],
+                        "tracked_files": 999,
+                    }
+
+            with patch("idea2repo.generator.inspect_workspace", return_value=FakeWorkspace()):
+                resume_research_repo(output)
+
+            self.assertEqual(validate(output), ())
+            project_yaml = (output / "project.yaml").read_text(encoding="utf-8")
+            workspace_snapshot = (output / "docs/runtime/workspace_snapshot.md").read_text(encoding="utf-8")
+            self.assertIn("created_at: 2001-01-01", project_yaml)
+            self.assertNotIn("fake-cwd", workspace_snapshot)
+            self.assertNotIn("fake-branch", workspace_snapshot)
+
+    def test_permission_policy_denies_risky_operations_by_default(self) -> None:
+        policy = PermissionPolicy()
+        with self.assertRaises(PermissionDeniedError):
+            policy.require(Operation.NETWORK)
+        with self.assertRaises(PermissionDeniedError):
+            policy.require(Operation.OVERWRITE)
+        self.assertTrue(policy.allows(Operation.WRITE))
+
+    def test_force_requires_overwrite_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "existing"
+            output.mkdir()
+            (output / "README.md").write_text("user content")
+
+            with self.assertRaises(PermissionDeniedError):
+                generate_research_repo(
+                    "test idea",
+                    output,
+                    force=True,
+                    permission_policy=PermissionPolicy(allow_overwrite=False),
+                )
+
+    def test_denied_force_resume_does_not_write_run_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "resume-denied"
+            generate_research_repo("agent memory compression", output, created_at="2026-05-10")
+            run_log = output / ".idea2repo/run_log.jsonl"
+            before = run_log.read_text(encoding="utf-8")
+
+            with self.assertRaises(PermissionDeniedError):
+                resume_research_repo(
+                    output,
+                    force=True,
+                    permission_policy=PermissionPolicy(allow_overwrite=False),
+                )
+
+            self.assertEqual(run_log.read_text(encoding="utf-8"), before)
 
     def test_generate_research_repo_refuses_non_empty_output_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

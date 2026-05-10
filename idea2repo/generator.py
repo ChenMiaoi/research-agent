@@ -9,7 +9,10 @@ from datetime import date
 from io import StringIO
 from pathlib import Path
 
+from .permissions import Operation, PermissionPolicy, default_policy
 from .scoring import Diagnosis, ScoreBreakdown, diagnose_idea
+from .state import RUN_LOG_PATH, append_run_log, read_manifest, write_manifest
+from .workspace import inspect_workspace
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ def generate_research_repo(
     resources: list[str] | None = None,
     force: bool = False,
     created_at: str | None = None,
+    permission_policy: PermissionPolicy | None = None,
 ) -> GeneratedProject:
     """Generate a CCF-A readiness repository for a raw research idea."""
 
@@ -40,12 +44,17 @@ def generate_research_repo(
         raise ValueError("timeline_weeks must be one of: 8, 12, 16, 24")
 
     root = Path(output)
+    permission_policy = permission_policy or default_policy(allow_overwrite=force)
     if root.exists() and any(root.iterdir()) and not force:
         raise FileExistsError(f"output directory already exists and is not empty: {root}")
+    if root.exists() and any(root.iterdir()):
+        permission_policy.require(Operation.OVERWRITE, str(root))
+    permission_policy.require(Operation.WRITE, str(root))
 
     created_at = created_at or date.today().isoformat()
     diagnosis = diagnose_idea(idea, requested_domains=requested_domains)
     project_name = slugify(root.name if root.name else idea)
+    workspace = inspect_workspace()
     files = _build_files(
         project_name,
         idea,
@@ -53,6 +62,7 @@ def generate_research_repo(
         created_at,
         timeline_weeks,
         resources or [],
+        workspace.as_dict(),
     )
 
     written: list[Path] = []
@@ -69,12 +79,126 @@ def generate_research_repo(
         keep_file.write_text("", encoding="utf-8", newline="\n")
         written.append(keep_file)
 
+    manifest_path = write_manifest(
+        root,
+        project_name=project_name,
+        idea=idea,
+        requested_domains=requested_domains,
+        timeline_weeks=timeline_weeks,
+        resources=resources or [],
+        created_at=created_at,
+        files=written,
+        permissions=permission_policy.as_dict(),
+        workspace=workspace.as_dict(),
+    )
+    written.append(manifest_path)
+    written.append(root / RUN_LOG_PATH)
+
     return GeneratedProject(
         root=root,
         project_name=project_name,
         files=tuple(written),
         diagnosis=diagnosis,
     )
+
+
+def resume_research_repo(
+    output: str | Path,
+    *,
+    force: bool = False,
+    permission_policy: PermissionPolicy | None = None,
+) -> GeneratedProject:
+    """Resume a generated repo by restoring only missing generated artifacts."""
+
+    root = Path(output)
+    permission_policy = permission_policy or default_policy(allow_overwrite=force)
+    permission_policy.require(Operation.WRITE, str(root / RUN_LOG_PATH))
+    if force:
+        permission_policy.require(Operation.OVERWRITE, str(root))
+    manifest = read_manifest(root)
+    append_run_log(root, "resume_started", {"force": force})
+    result = _regenerate_from_request(
+        root,
+        manifest,
+        force=force,
+        permission_policy=permission_policy,
+    )
+    append_run_log(root, "resume_completed", {"files": len(result.files)})
+    return result
+
+
+def _regenerate_from_request(
+    root: Path,
+    manifest: dict[str, object],
+    *,
+    force: bool,
+    permission_policy: PermissionPolicy,
+) -> GeneratedProject:
+    request = dict(manifest.get("request", {}))
+    idea = str(request.get("idea", "")).strip()
+    if not idea:
+        raise ValueError("manifest request is missing idea text")
+    requested_domains = [
+        str(value)
+        for value in request.get("requested_domains", [])
+        if str(value).strip()
+    ]
+    timeline_weeks = int(request.get("timeline_weeks", 12))
+    resources = [
+        str(value)
+        for value in request.get("resources", [])
+        if str(value).strip()
+    ]
+    diagnosis = diagnose_idea(idea, requested_domains=requested_domains)
+    project_name = str(manifest.get("project_name") or slugify(root.name if root.name else idea))
+    workspace = dict(manifest.get("workspace") or inspect_workspace().as_dict())
+    created_at = str(manifest.get("created_at") or date.today().isoformat())
+    files = _build_files(
+        project_name,
+        idea,
+        diagnosis,
+        created_at,
+        timeline_weeks,
+        resources,
+        workspace,
+    )
+    written: list[Path] = []
+    for relative_path, content in files.items():
+        path = root / relative_path
+        if path.exists() and not force:
+            continue
+        if path.exists():
+            permission_policy.require(Operation.OVERWRITE, str(path))
+        permission_policy.require(Operation.WRITE, str(path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
+        written.append(path)
+    for directory in _empty_directories():
+        directory_path = root / directory
+        keep_file = directory_path / ".gitkeep"
+        if keep_file.exists() and not force:
+            continue
+        if keep_file.exists():
+            permission_policy.require(Operation.OVERWRITE, str(keep_file))
+        permission_policy.require(Operation.WRITE, str(keep_file))
+        directory_path.mkdir(parents=True, exist_ok=True)
+        keep_file.write_text("", encoding="utf-8", newline="\n")
+        written.append(keep_file)
+    if force:
+        manifest_path = write_manifest(
+            root,
+            project_name=project_name,
+            idea=idea,
+            requested_domains=requested_domains,
+            timeline_weeks=timeline_weeks,
+            resources=resources,
+            created_at=created_at,
+            files=written,
+            permissions=permission_policy.as_dict(),
+            workspace=workspace,
+        )
+        written.append(manifest_path)
+    return GeneratedProject(root=root, project_name=project_name, files=tuple(written), diagnosis=diagnosis)
 
 
 def slugify(value: str) -> str:
@@ -91,6 +215,7 @@ def _build_files(
     created_at: str,
     timeline_weeks: int,
     resources: list[str],
+    workspace: dict[str, object] | None = None,
 ) -> dict[Path, str]:
     primary_route = diagnosis.routes[0]
     primary_domain = primary_route.domain
@@ -219,6 +344,7 @@ def _build_files(
         Path("docs/meeting/advisor_report.md"): _advisor_report(diagnosis),
         Path("docs/runtime/platform_notes.md"): _platform_notes(),
         Path("docs/runtime/provider_config.md"): _provider_config(),
+        Path("docs/runtime/workspace_snapshot.md"): _workspace_snapshot(workspace or {}),
         Path("paper/main.tex"): _main_tex(project_name),
         Path("paper/macros.tex"): _macros_tex(),
         Path("paper/sections/00_abstract.tex"): _section_tex("Abstract"),
@@ -1012,6 +1138,27 @@ Supported provider modes:
 - Local model backend.
 
 Do not commit tokens, cookies, API keys, or private provider responses.
+"""
+
+
+def _workspace_snapshot(workspace: dict[str, object]) -> str:
+    status_lines = workspace.get("git_status_short") or []
+    if isinstance(status_lines, list) and status_lines:
+        status_text = _markdown_list([str(line) for line in status_lines])
+    else:
+        status_text = "- clean or unavailable"
+    return f"""# Workspace Snapshot
+
+Generated from the local workspace context.
+
+- Current directory: {workspace.get("cwd", "unknown")}
+- Git root: {workspace.get("git_root", "not detected")}
+- Git branch: {workspace.get("git_branch", "not detected")}
+- Tracked files: {workspace.get("tracked_files", "unknown")}
+
+## Git Status
+
+{status_text}
 """
 
 
