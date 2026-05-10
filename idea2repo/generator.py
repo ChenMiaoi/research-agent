@@ -104,6 +104,8 @@ def _build_files(
     return {
         Path("README.md"): _root_readme(project_name, idea, diagnosis),
         Path(".gitignore"): _generated_gitignore(),
+        Path(".dockerignore"): _generated_dockerignore(),
+        Path(".env.example"): _env_example(),
         Path("project.yaml"): _project_yaml(
             project_name,
             idea,
@@ -292,17 +294,56 @@ exists in `results/`.
 
 
 def _generated_gitignore() -> str:
-    return """# Local environments and credentials
+    return """# Python / runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local environments and credentials
 .env
 .env.*
 !.env.example
 !.env.sample
 .venv/
 venv/
-__pycache__/
-*.py[cod]
+.envrc
+.direnv/
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.token
+*.secret
+credentials.json
+token.json
 
-# Research data and generated outputs
+# Node / frontend caches if this repo grows a web UI
+node_modules/
+dist/
+.vite/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+.fastapi/
+.uvicorn/
+.cache/
+.web-cache/
+
+# Research data and generated outputs kept out by default
+generated_repos/
+.idea2repo/
 data/raw/*
 data/processed/*
 results/logs/*
@@ -313,6 +354,15 @@ results/figures/*
 !results/logs/.gitkeep
 !results/tables/.gitkeep
 !results/figures/.gitkeep
+artifacts/
+runs/
+outputs/
+
+# Literature PDFs and large local datasets
+docs/reference/pdfs/*
+!docs/reference/pdfs/README.md
+datasets/
+pdfs/
 
 # Large model and experiment artifacts
 checkpoints/
@@ -323,12 +373,123 @@ mlruns/
 *.pt
 *.pth
 *.safetensors
+*.onnx
+*.gguf
+*.parquet
+*.feather
+*.arrow
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local databases and logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.tmp
+*.pid
+*.trace
+*.prof
+*.har
 
 # OS and editor noise
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+*.swp
+*.swo
+"""
+
+
+def _generated_dockerignore() -> str:
+    return """# Keep secrets and local state out of Docker build contexts.
+.git
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.token
+*.secret
+.envrc
+.direnv/
+credentials.json
+token.json
+.codex/sessions/
+.codex/auth/
+
+# Dependency and build caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/
+dist/
+.vite/
+.turbo/
+.fastapi/
+.uvicorn/
+.cache/
+.web-cache/
+
+# Large research artifacts
+data/raw/
+data/processed/
+results/
+artifacts/
+runs/
+outputs/
+checkpoints/
+models/
+wandb/
+mlruns/
+datasets/
+pdfs/
+docs/reference/pdfs/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.gguf
+*.parquet
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local databases and logs
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.tmp
+*.pid
+*.trace
+*.prof
+*.har
+"""
+
+
+def _env_example() -> str:
+    return """# Copy to .env for local experiments. Never commit real secrets.
+IDEA2REPO_PROVIDER=offline
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+ENTERPRISE_GATEWAY_URL=
+LOCAL_MODEL_ENDPOINT=
 """
 
 

@@ -8,6 +8,23 @@ from idea2repo.generator import generate_research_repo, slugify
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_root_gitignore_covers_web_and_local_service_hygiene(self) -> None:
+        root_gitignore = Path(__file__).resolve().parents[1] / ".gitignore"
+        content = root_gitignore.read_text()
+        for ignored in (
+            "/.vite/",
+            "/.turbo/",
+            "/web/.vite/",
+            "/web/.turbo/",
+            "/.fastapi/",
+            "/.uvicorn/",
+            "/.cache/",
+            "/.web-cache/",
+            "/.codex/sessions/",
+            "/.codex/auth/",
+        ):
+            self.assertIn(ignored, content)
+
     def test_slugify_creates_cross_platform_name(self) -> None:
         self.assertEqual(slugify("LLM Agent: Memory / Compression!"), "llm-agent-memory-compression")
         self.assertEqual(slugify("!!!"), "idea2repo-project")
@@ -27,6 +44,8 @@ class GeneratorTests(unittest.TestCase):
             required_paths = [
                 "README.md",
                 ".gitignore",
+                ".dockerignore",
+                ".env.example",
                 "project.yaml",
                 "requirements.txt",
                 "docs/diagnosis/ccf_a_readiness_report.md",
@@ -101,6 +120,49 @@ class GeneratorTests(unittest.TestCase):
             self.assertIn("Raw Idea Score", report)
             self.assertIn("Revised Plan Score", report)
             self.assertIn("Do not write performance claims", (output / "paper/sections/05_experiments.tex").read_text())
+            generated_gitignore = (output / ".gitignore").read_text()
+            for ignored in (
+                ".env",
+                "*.token",
+                "*.jks",
+                "node_modules/",
+                ".fastapi/",
+                ".uvicorn/",
+                ".cache/",
+                ".web-cache/",
+                "generated_repos/",
+                ".idea2repo/",
+                "docs/reference/pdfs/*",
+                "*.safetensors",
+                "*.parquet",
+                "*.sqlite",
+                "*.har",
+                "results/logs/*",
+            ):
+                self.assertIn(ignored, generated_gitignore)
+
+            dockerignore = (output / ".dockerignore").read_text()
+            for ignored in (
+                "secrets/",
+                "*.token",
+                "*.jks",
+                ".envrc",
+                ".codex/sessions/",
+                ".codex/auth/",
+                ".fastapi/",
+                ".cache/",
+                ".web-cache/",
+                "data/raw/",
+                "results/",
+                "models/",
+                "node_modules/",
+                "*.har",
+            ):
+                self.assertIn(ignored, dockerignore)
+
+            env_example = (output / ".env.example").read_text()
+            self.assertIn("IDEA2REPO_PROVIDER=offline", env_example)
+            self.assertIn("OPENAI_API_KEY=", env_example)
 
             references = (output / "docs/reference/references.bib").read_text()
             self.assertIn("Do not invent", references)

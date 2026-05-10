@@ -8,10 +8,12 @@ __pycache__/
 .pyre/
 .nox/
 .tox/
-.coverage
+.hypothesis/
 .coverage.*
+.coverage
 coverage.xml
 htmlcov/
+site/
 
 # Virtual environments
 /.venv/
@@ -27,14 +29,28 @@ htmlcov/
 *.egg
 pip-wheel-metadata/
 
-# Node / npm outputs for future TS tooling
+# FastAPI / local service outputs
+/.fastapi/
+/.uvicorn/
+/.cache/
+/.web-cache/
+
+# Node / npm / Vite outputs
 /node_modules/
+/web/node_modules/
+/web/dist/
+/web/.vite/
+/web/.turbo/
+/web/coverage/
+/.vite/
+/.turbo/
 /npm-debug.log*
 /yarn-debug.log*
 /yarn-error.log*
 /pnpm-debug.log*
 /.npm/
 /coverage/
+package-lock.json.tmp
 
 # Local environment, credentials, and secrets
 .env
@@ -47,7 +63,16 @@ pip-wheel-metadata/
 *.key
 *.crt
 *.p12
+*.pfx
+*.jks
+*.keystore
+*.token
+*.secret
+credentials.json
+token.json
 /secrets/
+/.codex/sessions/
+/.codex/auth/
 
 # Generated Idea2Repo outputs
 /generated_repos/
@@ -62,6 +87,10 @@ pip-wheel-metadata/
 *.sqlite3
 *.db
 *.tmp
+*.pid
+*.trace
+*.prof
+*.har
 
 # OS and editor noise
 .DS_Store
@@ -78,9 +107,25 @@ Thumbs.db
 /artifacts/
 /checkpoints/
 /models/
+/pdfs/
+/datasets/
+/tmp/
 /wandb/
 /mlruns/
 *.ckpt
 *.pt
 *.pth
 *.safetensors
+*.onnx
+*.gguf
+*.parquet
+*.feather
+*.arrow
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Docker / local compose overrides
+docker-compose.override.yml
+.docker/
