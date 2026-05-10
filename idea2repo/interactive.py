@@ -366,10 +366,6 @@ def run_interactive_session() -> int:
     return InteractiveSession().run()
 
 
-def _split_values(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 def _valid_config(config: DerivedResearchConfig) -> DerivedResearchConfig:
     weeks = config.timeline_weeks if config.timeline_weeks in {8, 12, 16, 24} else 12
     stack = config.stack if config.stack in {"python", "ts"} else "python"

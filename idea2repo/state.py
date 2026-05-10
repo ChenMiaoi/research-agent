@@ -135,10 +135,6 @@ def validate(root: str | Path) -> tuple[str, ...]:
     return tuple(errors)
 
 
-def manifest_request(root: str | Path) -> dict[str, Any]:
-    return dict(read_manifest(root).get("request", {}))
-
-
 def _is_state_file(root: Path, path: Path) -> bool:
     try:
         path.relative_to(root / STATE_DIR)

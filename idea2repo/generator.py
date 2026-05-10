@@ -1576,12 +1576,6 @@ Replace these with evidence-backed gaps after literature verification.
 """
 
 
-def _references_bib() -> str:
-    return """% Add only verified BibTeX entries.
-% Do not invent paper titles, authors, venues, years, or URLs.
-"""
-
-
 def _paper_notes_readme() -> str:
     return """# Paper Notes
 

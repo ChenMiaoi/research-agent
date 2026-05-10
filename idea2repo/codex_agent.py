@@ -610,47 +610,6 @@ Required artifact content keys may include:
 """
 
 
-def codex_provider_report(client: CodexCliClient | None = None) -> str:
-    """Safe provider report for the Codex CLI backend."""
-
-    client = client or CodexCliClient()
-    status = client.check_login()
-    lines = [
-        "# Provider Configuration",
-        "",
-        "## Active Provider",
-        "",
-        f"- Provider ID: {CODEX_PROVIDER_ID}",
-        f"- API shape: {CODEX_API_SHAPE}",
-        f"- Codex CLI: {'available' if status.available else 'missing'}",
-        f"- Login: {'logged in' if status.logged_in else 'not logged in'}",
-        f"- Version: {status.version or 'unknown'}",
-        f"- Binary: {status.binary or 'not found'}",
-        "",
-        "## Boundary",
-        "",
-        "- Use the official Codex CLI as the execution boundary.",
-        "- Do not read ~/.codex auth files, scrape browser cookies, or call private ChatGPT endpoints.",
-        "- Store generated research artifacts only; never write tokens or private provider responses.",
-    ]
-    return "\n".join(lines) + "\n"
-
-
-def codex_provider_payload(client: CodexCliClient | None = None) -> dict[str, Any]:
-    client = client or CodexCliClient()
-    status = client.check_login()
-    return {
-        "ok": status.available and status.logged_in,
-        "errors": [] if status.available and status.logged_in else [status.status_text],
-        "provider_id": CODEX_PROVIDER_ID,
-        "api_shape": CODEX_API_SHAPE,
-        "codex_available": status.available,
-        "codex_logged_in": status.logged_in,
-        "codex_version": status.version,
-        "report": codex_provider_report(client),
-    }
-
-
 def _loads_json_payload(text: str) -> Any:
     try:
         return json.loads(text)

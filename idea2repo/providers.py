@@ -248,10 +248,6 @@ def _required_environment(mode: ProviderMode) -> list[str]:
     return []
 
 
-def _presence(env: Mapping[str, str], key: str) -> str:
-    return "set" if env.get(key) else "unset"
-
-
 def _redact(value: str | None) -> str:
     if not value:
         return "unset"
