@@ -45,6 +45,7 @@ def generate_research_repo(
     datasets: list[str] | None = None,
     metrics: list[str] | None = None,
     claim_evidence_rows: list[dict[str, str]] | None = None,
+    stack: str = "python",
 ) -> GeneratedProject:
     """Generate a CCF-A readiness repository for a raw research idea."""
 
@@ -52,6 +53,8 @@ def generate_research_repo(
         raise ValueError("idea must not be empty")
     if timeline_weeks not in {8, 12, 16, 24}:
         raise ValueError("timeline_weeks must be one of: 8, 12, 16, 24")
+    if stack not in {"python", "ts"}:
+        raise ValueError("stack must be one of: python, ts")
 
     root = Path(output)
     permission_policy = permission_policy or default_policy(allow_overwrite=force)
@@ -93,6 +96,7 @@ def generate_research_repo(
         literature_tasks or [],
         claim_evidence_rows,
         evidence_gate,
+        stack,
     )
 
     written: list[Path] = []
@@ -116,6 +120,7 @@ def generate_research_repo(
         requested_domains=requested_domains,
         timeline_weeks=timeline_weeks,
         resources=resources or [],
+        stack=stack,
         created_at=created_at,
         files=written,
         permissions=permission_policy.as_dict(),
@@ -174,6 +179,9 @@ def _regenerate_from_request(
         if str(value).strip()
     ]
     timeline_weeks = int(request.get("timeline_weeks", 12))
+    stack = str(request.get("stack", "python"))
+    if stack not in {"python", "ts"}:
+        stack = "python"
     resources = [
         str(value)
         for value in request.get("resources", [])
@@ -196,6 +204,7 @@ def _regenerate_from_request(
         [],
         None,
         evaluate_evidence_gate(),
+        stack,
     )
     written: list[Path] = []
     for relative_path, content in files.items():
@@ -227,6 +236,7 @@ def _regenerate_from_request(
             requested_domains=requested_domains,
             timeline_weeks=timeline_weeks,
             resources=resources,
+            stack=stack,
             created_at=created_at,
             files=written,
             permissions=permission_policy.as_dict(),
@@ -255,6 +265,7 @@ def _build_files(
     literature_tasks: list[str] | None = None,
     claim_evidence_rows: list[dict[str, str]] | None = None,
     evidence_gate: EvidenceGate | None = None,
+    stack: str = "python",
 ) -> dict[Path, str]:
     primary_route = diagnosis.routes[0]
     primary_domain = primary_route.domain
@@ -265,7 +276,7 @@ def _build_files(
         or "none"
     )
 
-    return {
+    files = {
         Path("README.md"): _root_readme(project_name, idea, diagnosis),
         Path(".gitignore"): _generated_gitignore(),
         Path(".dockerignore"): _generated_dockerignore(),
@@ -279,6 +290,7 @@ def _build_files(
             resources,
         ),
         Path("requirements.txt"): _requirements_txt(),
+        Path("pyproject.toml"): _generated_pyproject(project_name),
         Path("docs/diagnosis/ccf_a_readiness_report.md"): _readiness_report(
             project_name,
             idea,
@@ -350,6 +362,9 @@ def _build_files(
         Path("paper/sections/06_discussion.tex"): _section_tex("Discussion"),
         Path("paper/sections/07_conclusion.tex"): _section_tex("Conclusion"),
         Path("src/README.md"): _src_readme(),
+        Path("src/research_project/__init__.py"): _research_init(),
+        Path("src/research_project/runner.py"): _research_runner(),
+        Path("src/research_project/result_logger.py"): _result_logger_py(),
         Path("src/method/README.md"): _component_readme("method implementation"),
         Path("src/baselines/README.md"): _component_readme("baseline reproductions"),
         Path("src/evaluation/README.md"): _component_readme("evaluation code"),
@@ -361,11 +376,23 @@ def _build_files(
         Path("scripts/README.md"): _scripts_readme(),
         Path("scripts/run.sh"): _run_sh(),
         Path("scripts/run.ps1"): _run_ps1(),
+        Path("tests/test_smoke.py"): _generated_smoke_test(),
         Path("docker/Dockerfile"): _dockerfile(),
         Path("docker/docker-compose.yml"): _docker_compose(),
+        Path(".github/workflows/ci.yml"): _github_ci(stack),
         Path(".github/workflows/README.md"): _github_workflows_readme(),
         Path(".github/ISSUE_TEMPLATE/research_task.md"): _issue_template(),
     }
+    if stack == "ts":
+        files.update(
+            {
+                Path("package.json"): _package_json(project_name),
+                Path("tsconfig.json"): _tsconfig_json(),
+                Path("src/index.ts"): _ts_index(),
+                Path("tests/smoke.test.ts"): _ts_smoke_test(),
+            }
+        )
+    return files
 
 
 def _empty_directories() -> tuple[Path, ...]:
@@ -1261,6 +1288,95 @@ Keep implementation code here. Separate proposed method, baselines, evaluation, 
 """
 
 
+def _generated_pyproject(project_name: str) -> str:
+    package = project_name.replace("-", "_")
+    return f"""[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{project_name}"
+version = "0.1.0"
+description = "Executable research scaffold generated by Idea2Repo."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {{"" = "src"}}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["research_project*"]
+
+[project.scripts]
+{package} = "research_project.runner:main"
+"""
+
+
+def _research_init() -> str:
+    return '"""Research project scaffold."""\n\n__all__ = ["__version__"]\n__version__ = "0.1.0"\n'
+
+
+def _research_runner() -> str:
+    return '''"""Cross-platform smoke entrypoint for the generated research project."""
+
+from __future__ import annotations
+
+from .result_logger import log_result
+
+
+def main() -> int:
+    log_result("smoke", {"status": "ok"})
+    print("Idea2Repo research scaffold is ready.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def _result_logger_py() -> str:
+    return '''"""Lightweight JSONL result logger."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def log_result(name: str, payload: dict[str, Any], output: str | Path = "results/logs/results.jsonl") -> Path:
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "name": name,
+        "payload": payload,
+    }
+    with path.open("a", encoding="utf-8", newline="\\n") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\\n")
+    return path
+'''
+
+
+def _generated_smoke_test() -> str:
+    return '''import unittest
+
+from research_project.runner import main
+
+
+class SmokeTests(unittest.TestCase):
+    def test_smoke_entrypoint(self) -> None:
+        self.assertEqual(main(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+
 def _component_readme(component: str) -> str:
     return f"# {component.title()}\n\nTODO: Add {component}.\n"
 
@@ -1304,24 +1420,24 @@ def _run_sh() -> str:
     return """#!/usr/bin/env sh
 set -eu
 
-echo "TODO: add Unix/macOS experiment entrypoint after the stack is chosen."
+uv run python -m research_project.runner
 """
 
 
 def _run_ps1() -> str:
     return """$ErrorActionPreference = "Stop"
 
-Write-Host "TODO: add Windows PowerShell experiment entrypoint after the stack is chosen."
+uv run python -m research_project.runner
 """
 
 
 def _dockerfile() -> str:
-    return """# Placeholder Dockerfile. Pin dependencies once the experiment stack is known.
-FROM python:3.12-slim
+    return """FROM python:3.12-slim
 WORKDIR /workspace
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir uv
 COPY . .
+RUN uv sync
+CMD ["uv", "run", "python", "-m", "research_project.runner"]
 """
 
 
@@ -1340,7 +1456,82 @@ def _docker_compose() -> str:
 def _github_workflows_readme() -> str:
     return """# Workflows
 
-Add CI after implementation language and test commands are fixed.
+CI runs the generated scaffold smoke tests. Extend it when real experiments are added.
+"""
+
+
+def _github_ci(stack: str) -> str:
+    npm_steps = ""
+    if stack == "ts":
+        npm_steps = """
+      - name: Install npm dependencies
+        run: npm install
+      - name: Run TypeScript smoke test
+        run: npm test
+"""
+    return f"""name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run Python smoke tests
+        run: uv run python -m unittest discover -s tests
+{npm_steps}"""
+
+
+def _package_json(project_name: str) -> str:
+    return f"""{{
+  "name": "{project_name}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {{
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node dist/tests/smoke.test.js"
+  }},
+  "devDependencies": {{
+    "typescript": "^5.6.0"
+  }}
+}}
+"""
+
+
+def _tsconfig_json() -> str:
+    return """{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}
+"""
+
+
+def _ts_index() -> str:
+    return """export function scaffoldStatus(): string {
+  return "ready";
+}
+"""
+
+
+def _ts_smoke_test() -> str:
+    return """import { scaffoldStatus } from "../src/index.js";
+
+if (scaffoldStatus() !== "ready") {
+  throw new Error("scaffold is not ready");
+}
 """
 
 

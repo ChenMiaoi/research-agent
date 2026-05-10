@@ -55,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
             "single-researcher, no-gpu, gpu, real-data, no-real-data."
         ),
     )
+    parser.add_argument(
+        "--stack",
+        choices=("python", "ts"),
+        default="python",
+        help="Generated research scaffold stack.",
+    )
     _add_permission_flags(parser)
     return parser
 
@@ -112,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 resources=args.resources,
                 force=args.force,
                 permission_policy=_policy_from_args(args),
+                stack=args.stack,
             )
             _print_generation_result(result, args.weeks)
             return 0

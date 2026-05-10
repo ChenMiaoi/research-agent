@@ -19,6 +19,8 @@ class CliTests(unittest.TestCase):
                 "16",
                 "--resource",
                 "no-gpu",
+                "--stack",
+                "ts",
             ]
         )
         self.assertEqual(args.idea, "test idea")
@@ -26,6 +28,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.domains, ["OSDI"])
         self.assertEqual(args.weeks, 16)
         self.assertEqual(args.resources, ["no-gpu"])
+        self.assertEqual(args.stack, "ts")
 
     def test_command_parser_accepts_generate_subcommand(self) -> None:
         args = build_command_parser().parse_args(

@@ -1,5 +1,7 @@
 import csv
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +53,7 @@ class GeneratorTests(unittest.TestCase):
                 ".dockerignore",
                 ".env.example",
                 "project.yaml",
+                "pyproject.toml",
                 "requirements.txt",
                 "docs/diagnosis/ccf_a_readiness_report.md",
                 "docs/diagnosis/raw_idea_score.md",
@@ -94,6 +97,9 @@ class GeneratorTests(unittest.TestCase):
                 "paper/sections/06_discussion.tex",
                 "paper/sections/07_conclusion.tex",
                 "src/README.md",
+                "src/research_project/__init__.py",
+                "src/research_project/runner.py",
+                "src/research_project/result_logger.py",
                 "src/method/README.md",
                 "src/baselines/README.md",
                 "src/evaluation/README.md",
@@ -115,8 +121,10 @@ class GeneratorTests(unittest.TestCase):
                 "scripts/README.md",
                 "scripts/run.sh",
                 "scripts/run.ps1",
+                "tests/test_smoke.py",
                 "docker/Dockerfile",
                 "docker/docker-compose.yml",
+                ".github/workflows/ci.yml",
                 ".github/workflows/README.md",
                 ".github/ISSUE_TEMPLATE/research_task.md",
                 ".idea2repo/manifest.json",
@@ -289,6 +297,84 @@ class GeneratorTests(unittest.TestCase):
             current = status(output)
             self.assertEqual(current.total_artifacts, current.present_artifacts)
             self.assertEqual(validate(output), ())
+
+    def test_generated_python_scaffold_runs_smoke_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "smoke"
+            generate_research_repo("agent memory compression", output, created_at="2026-05-10")
+
+            completed = subprocess.run(
+                ["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests"],
+                cwd=output,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_generate_research_repo_writes_ts_stack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "ts-stack"
+            generate_research_repo("agent memory compression", output, stack="ts", created_at="2026-05-10")
+
+            self.assertTrue((output / "package.json").exists())
+            self.assertTrue((output / "tsconfig.json").exists())
+            self.assertTrue((output / "src/index.ts").exists())
+            self.assertTrue((output / "tests/smoke.test.ts").exists())
+            package_json = (output / "package.json").read_text()
+            self.assertIn("npm run build && node dist/tests/smoke.test.js", package_json)
+            ci = (output / ".github/workflows/ci.yml").read_text()
+            self.assertIn("npm test", ci)
+            manifest = (output / ".idea2repo/manifest.json").read_text()
+            self.assertIn('"stack": "ts"', manifest)
+
+    def test_generated_ts_scaffold_runs_npm_smoke_test(self) -> None:
+        npm = shutil.which("npm")
+        if npm is None:
+            self.skipTest("npm is not available on PATH")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "ts-smoke"
+            generate_research_repo("agent memory compression", output, stack="ts", created_at="2026-05-10")
+
+            install = subprocess.run(
+                f'"{npm}" install',
+                cwd=output,
+                capture_output=True,
+                text=True,
+                shell=True,
+                timeout=180,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr + install.stdout)
+
+            test = subprocess.run(
+                f'"{npm}" test',
+                cwd=output,
+                capture_output=True,
+                text=True,
+                shell=True,
+                timeout=120,
+            )
+            self.assertEqual(test.returncode, 0, test.stderr + test.stdout)
+
+    def test_resume_restores_ts_stack_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "ts-resume"
+            generate_research_repo("agent memory compression", output, stack="ts", created_at="2026-05-10")
+            (output / "package.json").unlink()
+            (output / "src/index.ts").unlink()
+
+            result = resume_research_repo(output)
+
+            self.assertTrue((output / "package.json").exists())
+            self.assertTrue((output / "src/index.ts").exists())
+            self.assertIn(output / "package.json", result.files)
+            self.assertEqual(validate(output), ())
+
+    def test_generate_research_repo_rejects_unknown_stack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                generate_research_repo("agent memory compression", Path(tmp) / "bad", stack="go")
 
     def test_generate_research_repo_writes_verified_literature_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
