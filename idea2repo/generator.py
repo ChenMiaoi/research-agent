@@ -14,6 +14,7 @@ from .literature import PaperRecord, literature_tasks_md, references_bib, relate
 from .permissions import Operation, PermissionPolicy, default_policy
 from .providers import provider_schema_json, safe_provider_report
 from .scoring import Diagnosis, ScoreBreakdown, diagnose_idea
+from .security import safe_security_reframe, security_guardrail_markdown
 from .state import RUN_LOG_PATH, append_run_log, read_manifest, write_manifest
 from .workspace import inspect_workspace
 
@@ -77,11 +78,12 @@ def generate_research_repo(
         metrics=metrics,
         claim_evidence_rows=claim_evidence_rows,
     )
+    artifact_idea = safe_security_reframe(idea, diagnosis.security_assessment)
     project_name = slugify(root.name if root.name else idea)
     workspace = inspect_workspace()
     files = _build_files(
         project_name,
-        idea,
+        artifact_idea,
         diagnosis,
         created_at,
         timeline_weeks,
@@ -110,7 +112,7 @@ def generate_research_repo(
     manifest_path = write_manifest(
         root,
         project_name=project_name,
-        idea=idea,
+        idea=artifact_idea,
         requested_domains=requested_domains,
         timeline_weeks=timeline_weeks,
         resources=resources or [],
@@ -178,12 +180,13 @@ def _regenerate_from_request(
         if str(value).strip()
     ]
     diagnosis = diagnose_idea(idea, requested_domains=requested_domains)
+    artifact_idea = safe_security_reframe(idea, diagnosis.security_assessment)
     project_name = str(manifest.get("project_name") or slugify(root.name if root.name else idea))
     workspace = dict(manifest.get("workspace") or inspect_workspace().as_dict())
     created_at = str(manifest.get("created_at") or date.today().isoformat())
     files = _build_files(
         project_name,
-        idea,
+        artifact_idea,
         diagnosis,
         created_at,
         timeline_weeks,
@@ -220,7 +223,7 @@ def _regenerate_from_request(
         manifest_path = write_manifest(
             root,
             project_name=project_name,
-            idea=idea,
+            idea=artifact_idea,
             requested_domains=requested_domains,
             timeline_weeks=timeline_weeks,
             resources=resources,
@@ -295,6 +298,9 @@ def _build_files(
         ),
         Path("docs/diagnosis/evidence_gate.md"): evidence_gate_markdown(
             evidence_gate or diagnosis.evidence_gate
+        ),
+        Path("docs/diagnosis/security_guardrail.md"): security_guardrail_markdown(
+            diagnosis.security_assessment
         ),
         Path("docs/diagnosis/risk_register.md"): _risk_register(diagnosis),
         Path("docs/diagnosis/reviewer_simulation.md"): _reviewer_simulation(diagnosis),
@@ -692,6 +698,7 @@ def _readiness_report(
 - Revised Plan Score: {diagnosis.revised_score.total} / 100
 - Primary route: {route.domain.label}
 - Candidate venues: {primary_venues}
+- Security scope: {diagnosis.security_assessment.scope}
 - Raw score caps: {cap_values}
 - Revised score caps: {revised_cap_values}
 - CCF-A scoring track: Full / Regular papers only; workshop, demo, and short-paper targets are capped.

@@ -8,6 +8,7 @@ from enum import Enum
 
 from .evidence import EvidenceGate, evaluate_evidence_gate
 from .literature import PaperRecord
+from .security import SecurityAssessment, assess_security_scope, safe_security_reframe
 from .venues import DomainRoute, VenueDatabase, load_venue_database, route_idea
 
 
@@ -88,6 +89,7 @@ class Diagnosis:
     revised_plan: tuple[str, ...]
     revised_plan_text: str
     evidence_gate: EvidenceGate
+    security_assessment: SecurityAssessment
 
 
 def parse_idea(idea: str) -> ParsedIdea:
@@ -157,8 +159,10 @@ def diagnose_idea(
     """Produce strict raw and revised CCF-A readiness scores."""
 
     database = database or load_venue_database()
-    parsed = parse_idea(idea)
-    routes = tuple(route_idea(idea, database, requested_domains=requested_domains))
+    security_assessment = assess_security_scope(idea)
+    scoped_idea = safe_security_reframe(idea, security_assessment)
+    parsed = parse_idea(scoped_idea)
+    routes = tuple(route_idea(scoped_idea, database, requested_domains=requested_domains))
     primary = routes[0].domain
     required_evidence = _required_evidence(primary.key)
     revised_plan = _revised_plan(primary.key)
@@ -188,6 +192,7 @@ def diagnose_idea(
         revised_plan=revised_plan,
         revised_plan_text=revised_plan_text,
         evidence_gate=evidence_gate,
+        security_assessment=security_assessment,
     )
 
 

@@ -56,6 +56,7 @@ class GeneratorTests(unittest.TestCase):
                 "docs/diagnosis/raw_idea_score.md",
                 "docs/diagnosis/revised_plan_score.md",
                 "docs/diagnosis/evidence_gate.md",
+                "docs/diagnosis/security_guardrail.md",
                 "docs/diagnosis/risk_register.md",
                 "docs/diagnosis/reviewer_simulation.md",
                 "docs/survey/survey.md",
@@ -130,6 +131,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertIn("Raw Idea Score", report)
             self.assertIn("Revised Plan Score", report)
             self.assertIn("Submission readiness gate: blocked", report)
+            self.assertIn("Security scope:", report)
             self.assertIn("Do not write performance claims", (output / "paper/sections/05_experiments.tex").read_text())
             generated_gitignore = (output / ".gitignore").read_text()
             for ignored in (
@@ -243,6 +245,8 @@ class GeneratorTests(unittest.TestCase):
             evidence_gate = (output / "docs/diagnosis/evidence_gate.md").read_text()
             self.assertIn("Submission readiness: blocked", evidence_gate)
             self.assertIn("Generated revised-plan prose does not make a project", evidence_gate)
+            security_guardrail = (output / "docs/diagnosis/security_guardrail.md").read_text()
+            self.assertIn("Security Guardrail", security_guardrail)
 
             plan = (output / "docs/execution_plan/16_week_plan.md").read_text()
             self.assertIn("# 16 Week Plan", plan)
