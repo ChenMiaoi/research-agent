@@ -5,44 +5,70 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
+.nox/
+.tox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Virtual environments
-.venv/
-venv/
-env/
+/.venv/
+/venv/
+/env/
+/ENV/
 
-# Build outputs
-build/
-dist/
+# Build and packaging outputs
+/build/
+/dist/
 *.egg-info/
+*.egg
+pip-wheel-metadata/
 
-# Local environment and secrets
+# Local environment, credentials, and secrets
 .env
 .env.*
 !.env.example
+!.env.sample
 *.pem
 *.key
+*.crt
+*.p12
+/secrets/
 
 # Generated Idea2Repo outputs
-generated_repos/
-outputs/
-runs/
+/generated_repos/
+/outputs/
+/runs/
+/.idea2repo/
 
-# Logs and local databases
+# Logs, reports, and local databases
 *.log
+/logs/
 *.sqlite
 *.sqlite3
+*.db
+*.tmp
 
 # OS and editor noise
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+*.swp
+*.swo
 
 # Large research artifacts kept out of git by default
-data/raw/
-data/processed/
-results/
-*.pdf
+/data/raw/
+/data/processed/
+/results/
+/artifacts/
+/checkpoints/
+/models/
+/wandb/
+/mlruns/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
