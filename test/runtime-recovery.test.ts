@@ -31,7 +31,8 @@ test("skipRuntimeStage persists blocker plan trace and decision record", async (
     assert.equal(state?.stages.find((stage) => stage.id === "pdf_reading")?.status, "skipped");
     assert.match(state?.stages.find((stage) => stage.id === "pdf_reading")?.error ?? "", /offline/);
     const plan = await readPlanState(output);
-    assert.equal(plan.items.find((item) => item.stage_id === "pdf_reading")?.status, "blocked");
+    assert.equal(plan.items.find((item) => item.stage_id === "pdf_reading")?.status, "skipped");
+    assert.ok(plan.items.find((item) => item.stage_id === "pdf_reading")?.decision_ids.length);
     assert.ok((await readDecisionRecords(output)).some((record) => record.title.includes("Skipped PDF reading")));
     assert.ok((await readJsonlEvents(join(output, ".idea2repo", "trace.jsonl"))).some((event) => event.type === "stage.skipped" && event.stage_id === "pdf_reading"));
   } finally {

@@ -55,7 +55,7 @@ import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolR
 import { CODEX_CLI_PROVIDER_ID, OFFLINE_PROVIDER_ID, apiShapeForProvider, canonicalProvider } from "../providers.js";
 import { createProviderAdapter } from "../providers/index.js";
 import type { ProviderAdapter } from "../providers/adapter.js";
-import { createResearchPipelineState, markStage, readResearchPipelineState, writeResearchPipelineState, type ResearchPipelineState } from "./stage-state.js";
+import { createResearchPipelineState, markStage, readResearchPipelineState, updateStageRefs, writeResearchPipelineState, type ResearchPipelineState } from "./stage-state.js";
 import { researchStages, stageDefinition, type ResearchStageId } from "./stages.js";
 
 export type StagedResearchAgent = Pick<
@@ -171,7 +171,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   const decisions = options.outputRoot ? new DecisionRecorder(outputRoot, runId, options.events) : null;
   const recordDecision = async (input: Parameters<DecisionRecorder["record"]>[0]): Promise<void> => {
     decisionSummaries.push(`${input.title}: ${input.rationale_summary}`);
-    await decisions?.record(input);
+    const record = await decisions?.record(input);
+    if (isResearchStageId(input.stage_id) && record) {
+      state = updateStageRefs(state, input.stage_id, {
+        decision_ids: [record.id],
+        evidence_refs: input.evidence_refs.map(decisionEvidenceRef),
+        next_actions: input.alternatives.map((alternative) => alternative.option)
+      });
+      if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
+    }
   };
   const setStage = async (id: Parameters<typeof markStage>[1], status: Parameters<typeof markStage>[2], error?: string): Promise<void> => {
     throwIfAborted(options.signal);
@@ -194,7 +202,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     const stage = activeStage;
     if (!stage) return;
     state = markStage(state, stage.id, "blocked", {
-      error: `Pending approval ${record.id} for ${record.action}: ${record.risk.join(", ")}`,
+      blocker: `Pending approval ${record.id} for ${record.action}: ${record.risk.join(", ")}`,
       artifacts: stageArtifactPaths(stage.id)
     });
     if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
@@ -439,6 +447,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     manifest
   });
   if (options.outputRoot) await replaceEvidenceItems(outputRoot, { runId, stageId: "pdf_reading" }, evidenceItems);
+  if (evidenceItems.length) {
+    state = updateStageRefs(state, "pdf_reading", { evidence_refs: evidenceItems.map((item) => item.id) });
+    if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
+  }
   for (const row of verifiedEvidenceRows) {
     await emitRuntimeEvent({
       type: "evidence.extracted",
@@ -892,6 +904,10 @@ function fillQueryGate<T extends { query: string }>(queries: T[], fallback: T[])
 function stageArtifactPaths(id: Parameters<typeof markStage>[1], extraArtifacts: string[] = []): string[] {
   const stage = researchStages.find((candidate) => candidate.id === id);
   return [...new Set([...(stage?.artifactPaths ?? []), ...extraArtifacts])];
+}
+
+function decisionEvidenceRef(ref: { artifact: string; page?: number; quote?: string; chunk_id?: string }): string {
+  return [ref.artifact, ref.page ? `page:${ref.page}` : "", ref.chunk_id ? `chunk:${ref.chunk_id}` : ""].filter(Boolean).join("#");
 }
 
 async function readJsonArtifact<T>(readArtifact: (relativePath: string) => Promise<string | null>, relativePath: string): Promise<T | null> {
@@ -1507,6 +1523,10 @@ ${candidates.slice(0, 20).map((candidate, index) => `- ${index + 1}. ${candidate
 
 function safePaperId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "paper";
+}
+
+function isResearchStageId(value: string | undefined): value is ResearchStageId {
+  return Boolean(value && researchStages.some((stage) => stage.id === value));
 }
 
 function titleFromIdea(idea: string): string {

@@ -21,6 +21,11 @@ test("runtime TUI panels render as React elements", () => {
         step: "Idea intake",
         status: "in_progress",
         artifacts: ["docs/idea.md"],
+        input_refs: ["idea"],
+        output_refs: ["docs/idea.md"],
+        evidence_refs: [],
+        decision_ids: [],
+        next_actions: ["Run Idea intake"],
         updated_at: "2026-01-01T00:00:00Z"
       }
     ]

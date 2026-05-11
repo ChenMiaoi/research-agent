@@ -19,5 +19,6 @@ function mark(status: PlanState["items"][number]["status"]): string {
   if (status === "completed") return "[x]";
   if (status === "in_progress") return "[>]";
   if (status === "blocked") return "[!]";
+  if (status === "skipped") return "[-]";
   return "[ ]";
 }

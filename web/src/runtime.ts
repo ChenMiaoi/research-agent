@@ -46,6 +46,8 @@ function statusForEvent(current: RuntimeRunSummary["status"], event: RuntimeEven
   if (event.type === "run.completed") return "completed";
   if (event.type === "run.failed") return "failed";
   if (event.type === "run.cancelled") return "cancelled";
+  if (event.type === "stage.blocked") return "blocked";
+  if (event.type === "stage.started" && current === "blocked") return "running";
   return current;
 }
 
@@ -77,6 +79,7 @@ function approvalsForEvent(approvals: RuntimeApproval[], event: RuntimeEvent): R
       id: event.approval_id,
       action: event.action,
       risk: event.risk,
+      stage_id: event.stage_id,
       timestamp: event.timestamp
     };
     return [...approvals.filter((approval) => approval.id !== next.id), next];

@@ -5,9 +5,14 @@ export type RuntimePlanItem = {
   id: string;
   stage_id?: string;
   step: string;
-  status: "pending" | "in_progress" | "completed" | "blocked";
+  status: "pending" | "in_progress" | "completed" | "blocked" | "skipped";
   blocker?: string;
   artifacts: string[];
+  input_refs: string[];
+  output_refs: string[];
+  evidence_refs: string[];
+  decision_ids: string[];
+  next_actions: string[];
   updated_at: string;
 };
 

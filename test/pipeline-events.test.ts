@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { generateResearchRepo } from "../src/generator.js";
 import { main } from "../src/cli.js";
 import { runResearchPipeline } from "../src/pipeline/research-pipeline.js";
+import { readResearchPipelineState } from "../src/pipeline/stage-state.js";
 import { JsonlEventSink, readJsonlEvents } from "../src/runtime/events.js";
 
 test("research pipeline emits run and stage events to a sink", async () => {
@@ -26,6 +27,14 @@ test("research pipeline emits run and stage events to a sink", async () => {
     assert.ok(events.some((event) => event.type === "stage.completed" && event.stage_id === "ccf_a_strict_scoring"));
     assert.ok(events.some((event) => event.type === "stage.skipped" && event.stage_id === "pdf_reading"));
     assert.ok(events.some((event) => event.type === "score.updated" && event.score === 45));
+    const state = await readResearchPipelineState(root);
+    const ideaStage = state?.stages.find((stage) => stage.id === "idea_intake");
+    assert.deepEqual(ideaStage?.input_refs, ["idea"]);
+    assert.ok(ideaStage?.output_refs.includes("docs/idea/idea_brief.md"));
+    assert.ok(ideaStage?.decision_ids.length);
+    const pdfStage = state?.stages.find((stage) => stage.id === "pdf_reading");
+    assert.equal(pdfStage?.status, "skipped");
+    assert.match(pdfStage?.blocker ?? "", /No downloaded PDFs/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

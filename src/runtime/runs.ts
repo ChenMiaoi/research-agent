@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { runResearchPipeline } from "../pipeline/research-pipeline.js";
-import { createResearchPipelineState, markStage, readResearchPipelineState, writeResearchPipelineState, type ResearchPipelineState } from "../pipeline/stage-state.js";
+import { createResearchPipelineState, markStage, readResearchPipelineState, updateStageRefs, writeResearchPipelineState, type ResearchPipelineState } from "../pipeline/stage-state.js";
 import { researchStages, stageDefinition, type ResearchStageId } from "../pipeline/stages.js";
 import { ensureChild, exists, readManifest, status as projectStatus } from "../state.js";
 import { APPROVALS_PATH, approvalPolicyFromPermissions, readApprovalRecords } from "./approvals.js";
@@ -249,7 +249,7 @@ export async function skipRuntimeStage(
   const event = { type: "stage.skipped" as const, run_id: runId, stage_id: stage.id, reason, timestamp: runtimeTimestamp() };
   await events.emit(event);
   await persistPlanState(resolvedRoot, runId, planFromPipelineState(runId, nextState), events);
-  await new DecisionRecorder(resolvedRoot, runId, events).record({
+  const decision = await new DecisionRecorder(resolvedRoot, runId, events).record({
     stage_id: stage.id,
     title: `Skipped ${stage.label}`,
     rationale_summary: reason,
@@ -258,6 +258,9 @@ export async function skipRuntimeStage(
     alternatives: [{ option: "Retry the stage", why_not: "The operator explicitly chose to skip it." }],
     confidence: "medium"
   });
+  const decisionState = updateStageRefs(nextState, stage.id, { decision_ids: [decision.id], next_actions: ["Retry the stage"] });
+  await writeResearchPipelineState(resolvedRoot, decisionState);
+  await persistPlanState(resolvedRoot, runId, planFromPipelineState(runId, decisionState), events);
   return { root: resolvedRoot, run_id: runId, stage_id: stage.id, action: "skip", snapshots: [] };
 }
 
@@ -280,7 +283,7 @@ export async function retryRuntimeStage(
   const resetState = resetPipelineStateFrom(state, stage.id);
   await writeResearchPipelineState(resolvedRoot, resetState);
   await persistPlanState(resolvedRoot, runId, planFromPipelineState(runId, resetState), events);
-  await new DecisionRecorder(resolvedRoot, runId, events).record({
+  const decision = await new DecisionRecorder(resolvedRoot, runId, events).record({
     stage_id: stage.id,
     title: `Retry requested for ${stage.label}`,
     rationale_summary: options.reason?.trim() || `Reset ${stage.id} and downstream stages to pending for a controlled retry.`,
@@ -289,6 +292,9 @@ export async function retryRuntimeStage(
     alternatives: [{ option: "Resume without retry", why_not: "The operator requested a fresh stage attempt." }],
     confidence: "medium"
   });
+  const decisionState = updateStageRefs(resetState, stage.id, { decision_ids: [decision.id], next_actions: [options.execute ? "Execute retry" : "Retry when ready"] });
+  await writeResearchPipelineState(resolvedRoot, decisionState);
+  await persistPlanState(resolvedRoot, runId, planFromPipelineState(runId, decisionState), events);
   if (options.execute) {
     await executeRetry(resolvedRoot, runId, events, { ...options, stageId: stage.id });
   }
@@ -423,7 +429,18 @@ function resetPipelineStateFrom(state: ResearchPipelineState, stageId: ResearchS
     updated_at: updatedAt,
     stages: state.stages.map((stage) =>
       affected.has(stage.id)
-        ? { id: stage.id, status: "pending" as const, artifacts: stage.artifacts }
+        ? (() => {
+            const definition = stageDefinition(stage.id);
+            return {
+            ...stage,
+            status: "pending" as const,
+            error: undefined,
+            blocker: undefined,
+            evidence_refs: [],
+            decision_ids: [],
+            next_actions: [`Run ${definition.label}`]
+          };
+        })()
         : stage
     )
   };
@@ -441,9 +458,14 @@ function planFromPipelineState(runId: string, state: ResearchPipelineState): Pla
         id: stage.id,
         stage_id: stage.id,
         step: stage.label,
-        status: snapshot?.status === "completed" ? "completed" : snapshot?.status === "running" ? "in_progress" : snapshot?.status === "failed" || snapshot?.status === "skipped" || snapshot?.status === "blocked" ? "blocked" : "pending",
-        ...(snapshot?.error ? { blocker: snapshot.error } : {}),
+        status: snapshot?.status === "completed" ? "completed" : snapshot?.status === "running" ? "in_progress" : snapshot?.status === "skipped" ? "skipped" : snapshot?.status === "failed" || snapshot?.status === "blocked" ? "blocked" : "pending",
+        ...(snapshot?.blocker ?? snapshot?.error ? { blocker: snapshot.blocker ?? snapshot.error } : {}),
         artifacts: snapshot?.artifacts ?? stage.artifactPaths,
+        input_refs: snapshot?.input_refs ?? [],
+        output_refs: snapshot?.output_refs ?? snapshot?.artifacts ?? stage.artifactPaths,
+        evidence_refs: snapshot?.evidence_refs ?? [],
+        decision_ids: snapshot?.decision_ids ?? [],
+        next_actions: snapshot?.next_actions ?? [`Run ${stage.label}`],
         updated_at: state.updated_at || now
       };
     })
