@@ -27,7 +27,7 @@ import { CompositeEventSink, JsonlEventSink, runtimeTimestamp, type EventSink, t
 import { PlanEventSink } from "./runtime/plan.js";
 import { RunStateEventSink, attachRunStateResult } from "./runtime/run-state.js";
 import { readRuntimeRunContext, writeRuntimeRunContext } from "./runtime/run-context.js";
-import { ApprovalRecorder, approvalPolicyFromPermissions } from "./runtime/approvals.js";
+import { ApprovalRecorder, approvalPolicyFromPermissions, type RuntimeMode } from "./runtime/approvals.js";
 import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolRegistry } from "./runtime/tools.js";
 import { restoreRuntimeState, type RuntimeStateRestoreResult } from "./runtime/runs.js";
 import { writeResearchPipelineState } from "./pipeline/stage-state.js";
@@ -64,6 +64,7 @@ export type GenerateOptions = {
   runResearchPipeline?: boolean;
   allowNetwork?: boolean;
   downloadPdfs?: boolean;
+  allowPdfDownload?: boolean;
   maxPapers?: number;
   sources?: string[];
   strictCcfA?: boolean;
@@ -78,6 +79,7 @@ export type GenerateOptions = {
   runId?: string;
   eventSink?: EventSink;
   approvalMode?: "deny" | "block";
+  approvalRuntimeMode?: RuntimeMode;
   signal?: AbortSignal;
 };
 
@@ -143,10 +145,11 @@ export async function generateResearchRepo(idea: string, output: string, options
       allowWrite: policy.allowWrite,
       allowOverwrite: policy.allowOverwrite,
       allowNetwork: policy.allowNetwork,
+      allowPdfDownload: Boolean(options.allowPdfDownload),
       allowPublish: policy.allowPublish,
       allowShell: false
     },
-    "generate"
+    options.approvalRuntimeMode ?? "generate"
   );
   const toolContext = createToolContext({
     runId,
@@ -171,6 +174,7 @@ export async function generateResearchRepo(idea: string, output: string, options
       allow_write: approvalPolicy.allowWrite,
       allow_overwrite: approvalPolicy.allowOverwrite,
       allow_network: approvalPolicy.allowNetwork,
+      allow_pdf_download: approvalPolicy.allowPdfDownload,
       allow_publish: approvalPolicy.allowPublish,
       allow_shell: approvalPolicy.allowShell
     },
@@ -558,6 +562,7 @@ function approvalPolicyFromContext(
       allowWrite: stored?.allow_write ?? policy.allowWrite,
       allowOverwrite: stored?.allow_overwrite ?? (force && policy.allowOverwrite),
       allowNetwork: stored?.allow_network ?? false,
+      allowPdfDownload: stored?.allow_pdf_download ?? false,
       allowPublish: stored?.allow_publish ?? false,
       allowShell: stored?.allow_shell ?? false
     },

@@ -422,6 +422,7 @@ async function commandGenerate(argv: string[], researchMode = false): Promise<nu
     runResearchPipeline: researchMode || hasFlag(parsed, "run-research-pipeline"),
     allowNetwork: hasFlag(parsed, "allow-network"),
     downloadPdfs: hasFlag(parsed, "download-pdfs"),
+    allowPdfDownload: hasFlag(parsed, "allow-network") && hasFlag(parsed, "download-pdfs"),
     maxPapers: numberFlag(parsed, "max-papers", 20),
     sources: valuesFlag(parsed, "source"),
     strictCcfA: hasFlag(parsed, "strict-ccf-a"),
@@ -445,8 +446,8 @@ async function commandGenerate(argv: string[], researchMode = false): Promise<nu
   if (result.research_pipeline) console.log(`Research pipeline stages: ${result.research_pipeline.state.stages.length}`);
   if (result.template_profile_id) console.log(`Template profile: ${result.template_profile_id}`);
   if (result.fallback_reason) console.log(`Fallback reason: ${result.fallback_reason}`);
-  console.log("Main report: docs/diagnosis/ccf_a_readiness_report.md");
-  console.log(`Execution plan: docs/execution_plan/${weeks}_week_plan.md`);
+  console.log("Main report: reports/ccf_a_readiness_report.md");
+  console.log("Execution plan: plans/12_week_execution_plan.md");
   return 0;
 }
 

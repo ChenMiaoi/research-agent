@@ -21,7 +21,13 @@ test("approval policy gates network publish and overwrite risks by runtime mode"
   assert.equal(approvalDecision(plan, ["read"]), "auto_approved");
   assert.equal(approvalDecision(plan, ["write"]), "denied");
   assert.equal(approvalDecision(plan, ["network"]), "requires_approval");
+  assert.equal(approvalDecision(plan, ["pdf_download"]), "denied");
   assert.equal(approvalDecision(plan, ["publish"]), "denied");
+
+  const research = approvalPolicyForMode("research");
+  assert.equal(approvalDecision(research, ["network"]), "auto_approved");
+  assert.equal(approvalDecision(research, ["pdf_download"]), "requires_approval");
+  assert.equal(approvalDecision(research, ["network", "pdf_download"]), "requires_approval");
 
   const generate = approvalPolicyForMode("generate");
   assert.equal(approvalDecision(generate, ["write"]), "auto_approved");

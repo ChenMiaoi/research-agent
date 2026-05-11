@@ -51,7 +51,7 @@ test("slash command selection resolves partial commands", () => {
 test("slash command hint describes usage and misses", () => {
   assert.match(getSlashHint("/research"), /Press Enter to enter a value/);
   assert.match(getSlashHint("/artifact"), /Args:/);
-  assert.match(getSlashHint("/mode"), /Args: plan \| generate \| publish/);
+  assert.match(getSlashHint("/mode"), /Args: research \| plan \| generate \| publish/);
   assert.match(getSlashHint("/approve"), /Args: <approval_id>/);
   assert.match(getSlashHint("/generate"), /Legacy alias/);
   assert.match(getSlashHint("/model"), /Press Enter to choose/);

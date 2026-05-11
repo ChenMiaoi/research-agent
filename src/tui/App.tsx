@@ -179,7 +179,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   const [provider, setProvider] = useState<string>(OPENAI_CODEX_PROVIDER_ID);
   const [model, setModel] = useState(initialModel);
   const [reasoning, setReasoning] = useState<ReasoningEffort>(initialReasoning);
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("generate");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("research");
   const [output, setOutput] = useState(defaultOutput);
   const [outputBase, setOutputBase] = useState(defaultOutput);
   const [busy, setBusy] = useState(false);
@@ -192,6 +192,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<TuiRuntimeSnapshot | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("evidence");
   const activeAbortController = useRef<AbortController | null>(null);
+  const busyDepth = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -434,7 +435,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
       return;
     }
     const submitted = trimmed.startsWith("/") ? resolveSlashCommandInput(trimmed, selectedSlashIndex) : trimmed;
-    if (!trimmed || (busy && submitted !== "/cancel")) return;
+    if (!trimmed || (busy && !isBusySubmissionAllowed(submitted))) return;
     replaceInput("");
     append({ role: "user", text: submitted });
     rememberInput(submitted);
@@ -557,7 +558,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
         await runBusy(async () => {
           const artifactPath = rest.trim();
           if (!artifactPath) {
-            append({ role: "error", title: "Artifact path required", text: "Use /artifact docs/diagnosis/ccf_a_readiness_report.md." });
+            append({ role: "error", title: "Artifact path required", text: "Use /artifact reports/ccf_a_readiness_report.md." });
             return;
           }
           const content = await readFile(ensureChild(output, artifactPath), "utf8");
@@ -714,6 +715,9 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
         eventSink: runtimeEvents,
         approvalMode: "block",
         allowNetwork: policy.allowNetwork,
+        downloadPdfs: runtimeMode === "research" || runtimeMode === "danger-full-access",
+        allowPdfDownload: policy.allowPdfDownload,
+        approvalRuntimeMode: runtimeMode,
         permissionPolicy: {
           allowWrite: policy.allowWrite,
           allowOverwrite: policy.allowOverwrite,
@@ -752,8 +756,8 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
           `Scores: raw ${result.diagnosis.raw_score.total}/100, revised ${result.diagnosis.revised_score.total}/100`,
           `Provider: ${providerLabel(result.provider_id)} (${result.analysis_source === "codex" ? "Codex structured analysis" : "offline fallback"})`,
           `Artifacts: ${result.files.length}`,
-          "Main report: docs/diagnosis/ccf_a_readiness_report.md",
-          "Execution plan: docs/execution_plan/12_week_plan.md"
+          "Main report: reports/ccf_a_readiness_report.md",
+          "Execution plan: plans/12_week_execution_plan.md"
         ]
       });
     }).finally(() => {
@@ -966,6 +970,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
         `write=${policy.allowWrite}`,
         `overwrite=${policy.allowOverwrite}`,
         `network=${policy.allowNetwork}`,
+        `pdf=${policy.allowPdfDownload ? "auto" : "ask"}`,
         `publish=${policy.allowPublish}`,
         `shell=${policy.allowShell}`
       ]
@@ -1201,13 +1206,15 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   }
 
   async function runBusy(work: () => Promise<void>): Promise<void> {
+    busyDepth.current += 1;
     setBusy(true);
     try {
       await work();
     } catch (error) {
       appendError(error);
     } finally {
-      setBusy(false);
+      busyDepth.current = Math.max(0, busyDepth.current - 1);
+      if (!busyDepth.current) setBusy(false);
     }
   }
 
@@ -1267,6 +1274,11 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
 
   function recordRuntimeEvent(runId: string, outputRoot: string, event: Idea2RepoEvent): void {
     setRuntimeSnapshot((current) => applyTuiRuntimeEvent(current?.runId === runId ? current : createTuiRuntimeSnapshot(runId, outputRoot), event));
+    const approvalRecord = approvalRecordFromRequestedEvent(event, runtimeMode);
+    if (approvalRecord) {
+      setInspectorTab("approvals");
+      openApprovalDialog(approvalRecord, outputRoot);
+    }
     const activity = runtimeActivityForEvent(event);
     if (activity) {
       if (event.type === "run.completed") setWorkflowSteps((current) => completeWorkflowSteps(current));
@@ -2717,11 +2729,31 @@ function providerOptions(): SelectOption[] {
 
 function runtimeModeOptions(): SelectOption[] {
   return [
+    { label: "research", value: "research", description: "Allow literature search; ask before downloading public PDFs." },
     { label: "generate", value: "generate", description: "Write generated artifacts; network and publish require approval." },
     { label: "plan", value: "plan", description: "Read and plan only; writing and publishing are denied." },
     { label: "publish", value: "publish", description: "Prepare publish actions; publish still requires explicit approval." },
     { label: "danger-full-access", value: "danger-full-access", description: "Allow write and network operations; publish and shell remain gated." }
   ];
+}
+
+export function isBusySubmissionAllowed(input: string): boolean {
+  const command = input.trim().split(/\s+/)[0] ?? "";
+  return command === "/cancel" || command === "/approve" || command === "/deny" || command === "/approvals";
+}
+
+export function approvalRecordFromRequestedEvent(event: Idea2RepoEvent, mode: RuntimeMode): ApprovalRecord | null {
+  if (event.type !== "approval.requested") return null;
+  return {
+    id: event.approval_id,
+    run_id: event.run_id,
+    ...(event.stage_id ? { stage_id: event.stage_id } : {}),
+    action: event.action,
+    risk: event.risk.split(",").map((item) => item.trim()).filter(Boolean) as ApprovalRecord["risk"],
+    mode,
+    status: "pending",
+    created_at: event.timestamp
+  };
 }
 
 function providerLabel(provider: string): string {

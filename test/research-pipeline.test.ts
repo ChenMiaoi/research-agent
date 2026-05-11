@@ -39,6 +39,8 @@ test("offline research pipeline returns resumable stage state and core artifacts
   assert.match(result.artifacts["reports/evidence_ledger.md"] ?? "", /Evidence Ledger/);
   assert.match(result.artifacts["plans/12_week_execution_plan.md"] ?? "", /12 Week Execution Plan/);
   assert.match(result.artifacts["plans/experiment_plan.md"] ?? "", /Experiment Plan/);
+  assert.equal(result.artifacts["docs/diagnosis/ccf_a_readiness_report.md"], result.artifacts["reports/ccf_a_readiness_report.md"]);
+  assert.equal(result.artifacts["docs/execution_plan/12_week_plan.md"], result.artifacts["plans/12_week_execution_plan.md"]);
   assert.match(result.artifacts["paper/abstract.md"] ?? "", /Abstract Draft/);
   assert.match(result.artifacts["paper/related_work.md"] ?? "", /Related Work Draft/);
   assert.match(result.artifacts["papers/papers.bib"] ?? "", /Do not invent paper titles/);

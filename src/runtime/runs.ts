@@ -329,6 +329,7 @@ async function executeRetry(
       allowWrite: context?.approval_policy.allow_write ?? true,
       allowOverwrite: context?.approval_policy.allow_overwrite ?? true,
       allowNetwork: context?.approval_policy.allow_network ?? false,
+      allowPdfDownload: context?.approval_policy.allow_pdf_download ?? false,
       allowPublish: context?.approval_policy.allow_publish ?? false,
       allowShell: context?.approval_policy.allow_shell ?? false
     },

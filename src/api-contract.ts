@@ -24,6 +24,7 @@ export type GenerateRequest = {
   run_research_pipeline?: boolean;
   allow_network?: boolean;
   download_pdfs?: boolean;
+  allow_pdf_download?: boolean;
   max_papers?: number;
   sources?: string[];
   strict_ccf_a?: boolean;

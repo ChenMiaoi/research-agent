@@ -5,9 +5,9 @@ import { runtimeTimestamp, type EventSink } from "./events.js";
 
 export const APPROVALS_PATH = join(".idea2repo", "approvals.jsonl");
 
-export type RuntimeMode = "plan" | "generate" | "publish" | "danger-full-access";
+export type RuntimeMode = "plan" | "research" | "generate" | "publish" | "danger-full-access";
 
-export type ApprovalRisk = "read" | "write" | "overwrite" | "network" | "publish" | "shell";
+export type ApprovalRisk = "read" | "write" | "overwrite" | "network" | "pdf_download" | "publish" | "shell";
 
 export type ApprovalDecision = "auto_approved" | "requires_approval" | "denied";
 
@@ -16,6 +16,7 @@ export type ApprovalPolicy = {
   allowWrite: boolean;
   allowOverwrite: boolean;
   allowNetwork: boolean;
+  allowPdfDownload: boolean;
   allowPublish: boolean;
   allowShell: boolean;
 };
@@ -69,13 +70,15 @@ export function approvalPolicyForMode(mode: RuntimeMode, overrides: Partial<Omit
   const base = (() => {
     switch (mode) {
       case "plan":
-        return { allowWrite: false, allowOverwrite: false, allowNetwork: false, allowPublish: false, allowShell: false };
+        return { allowWrite: false, allowOverwrite: false, allowNetwork: false, allowPdfDownload: false, allowPublish: false, allowShell: false };
+      case "research":
+        return { allowWrite: true, allowOverwrite: false, allowNetwork: true, allowPdfDownload: false, allowPublish: false, allowShell: false };
       case "generate":
-        return { allowWrite: true, allowOverwrite: false, allowNetwork: false, allowPublish: false, allowShell: false };
+        return { allowWrite: true, allowOverwrite: false, allowNetwork: false, allowPdfDownload: false, allowPublish: false, allowShell: false };
       case "publish":
-        return { allowWrite: true, allowOverwrite: false, allowNetwork: false, allowPublish: false, allowShell: false };
+        return { allowWrite: true, allowOverwrite: false, allowNetwork: false, allowPdfDownload: false, allowPublish: false, allowShell: false };
       case "danger-full-access":
-        return { allowWrite: true, allowOverwrite: true, allowNetwork: true, allowPublish: false, allowShell: false };
+        return { allowWrite: true, allowOverwrite: true, allowNetwork: true, allowPdfDownload: true, allowPublish: false, allowShell: false };
     }
   })();
   return { mode, ...base, ...overrides };
@@ -323,6 +326,9 @@ function riskDecision(policy: ApprovalPolicy, risk: ApprovalRisk): ApprovalDecis
       return policy.allowOverwrite ? "auto_approved" : "requires_approval";
     case "network":
       return policy.allowNetwork ? "auto_approved" : "requires_approval";
+    case "pdf_download":
+      if (!policy.allowWrite) return "denied";
+      return policy.allowPdfDownload ? "auto_approved" : "requires_approval";
     case "publish":
       if (policy.allowPublish) return "auto_approved";
       return policy.mode === "publish" || policy.mode === "danger-full-access" ? "requires_approval" : "denied";

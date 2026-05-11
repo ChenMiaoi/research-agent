@@ -3,6 +3,7 @@ import { test } from "node:test";
 import React from "react";
 import { ApprovalDialog } from "../src/tui/ApprovalDialog.js";
 import { ArtifactPanel } from "../src/tui/ArtifactPanel.js";
+import { approvalRecordFromRequestedEvent, isBusySubmissionAllowed } from "../src/tui/App.js";
 import { PlanPanel } from "../src/tui/PlanPanel.js";
 import { nextInspectorTab, ResearchCockpit } from "../src/tui/ResearchCockpit.js";
 import { TracePanel } from "../src/tui/TracePanel.js";
@@ -191,6 +192,32 @@ test("TUI runtime snapshot surfaces blocked stage state", () => {
   });
   assert.equal(snapshot.status, "running");
   assert.equal(snapshot.message, undefined);
+});
+
+test("TUI keeps approval commands available while a run is busy", () => {
+  assert.equal(isBusySubmissionAllowed("/approve approval-1"), true);
+  assert.equal(isBusySubmissionAllowed("/deny approval-1"), true);
+  assert.equal(isBusySubmissionAllowed("/approvals"), true);
+  assert.equal(isBusySubmissionAllowed("/cancel"), true);
+  assert.equal(isBusySubmissionAllowed("/status"), false);
+
+  const record = approvalRecordFromRequestedEvent(
+    {
+      type: "approval.requested",
+      run_id: "run-1",
+      approval_id: "approval-1",
+      stage_id: "pdf_acquisition",
+      action: "tool:pdf.acquire",
+      risk: "network, pdf_download",
+      timestamp: "2026-01-01T00:00:01Z"
+    },
+    "research"
+  );
+  assert.equal(record?.id, "approval-1");
+  assert.equal(record?.stage_id, "pdf_acquisition");
+  assert.deepEqual(record?.risk, ["network", "pdf_download"]);
+  assert.equal(record?.mode, "research");
+  assert.equal(record?.status, "pending");
 });
 
 function textContent(value: unknown): string {

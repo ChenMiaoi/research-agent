@@ -41,6 +41,7 @@ export function ApprovalDialog({
           deny
         </Text>
       </Text>
+      <Text color="gray">a/y approve · d/n deny · Enter apply · Esc leave pending</Text>
     </Box>
   );
 }

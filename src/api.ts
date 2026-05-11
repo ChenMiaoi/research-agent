@@ -508,7 +508,8 @@ function generateOptionsFromBody(body: Record<string, unknown>, mode = runtimeMo
     reasoningEffort: stringOrNull(body.reasoning_effort),
     runResearchPipeline: Boolean(body.run_research_pipeline),
     allowNetwork: allowNetworkFromBody(body, mode),
-    downloadPdfs: Boolean(body.download_pdfs),
+    downloadPdfs: downloadPdfsFromBody(body, mode),
+    allowPdfDownload: allowPdfDownloadFromBody(body, mode),
     maxPapers: numberValue(body.max_papers, 20),
     sources: stringArray(body.sources),
     strictCcfA: Boolean(body.strict_ccf_a),
@@ -518,7 +519,8 @@ function generateOptionsFromBody(body: Record<string, unknown>, mode = runtimeMo
     paperType: paperTypeValue(body.paper_type),
     templateYear: optionalNumberValue(body.template_year),
     compilePaper: Boolean(body.compile_paper),
-    packageOverleaf: Boolean(body.package_overleaf)
+    packageOverleaf: Boolean(body.package_overleaf),
+    approvalRuntimeMode: approvalRuntimeModeFromSelection(mode)
   };
 }
 
@@ -534,6 +536,23 @@ function runtimeModeFromBody(body: Record<string, unknown>): RuntimeModeSelectio
 function allowNetworkFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): boolean {
   if (mode.product === "research" || mode.product === "danger") return body.allow_network !== false;
   return Boolean(body.allow_network);
+}
+
+function downloadPdfsFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): boolean {
+  if (body.download_pdfs !== undefined) return Boolean(body.download_pdfs);
+  return mode.product === "research";
+}
+
+function allowPdfDownloadFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): boolean {
+  if (body.allow_pdf_download !== undefined) return Boolean(body.allow_pdf_download);
+  return mode.product === "danger";
+}
+
+function approvalRuntimeModeFromSelection(mode: RuntimeModeSelection): GenerateOptions["approvalRuntimeMode"] {
+  if (mode.product === "read-only") return "plan";
+  if (mode.product === "danger") return "danger-full-access";
+  if (mode.product === "research") return "research";
+  return mode.legacy;
 }
 
 function permissionPolicyFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): GenerateOptions["permissionPolicy"] {

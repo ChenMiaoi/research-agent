@@ -19,6 +19,7 @@ export type RuntimeRunContext = {
     allow_write: boolean;
     allow_overwrite: boolean;
     allow_network: boolean;
+    allow_pdf_download?: boolean;
     allow_publish: boolean;
     allow_shell: boolean;
   };

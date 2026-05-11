@@ -124,6 +124,61 @@ test("tool registry blocks on pending approval and resumes after approval", asyn
   }
 });
 
+test("pdf acquisition requires first-class PDF download approval", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-tools-pdf-approval-"));
+  const events: Idea2RepoEvent[] = [];
+  const bus = new EventBus();
+  bus.subscribe((event) => events.push(event));
+  const registry = createCoreToolRegistry();
+  const policy = approvalPolicyForMode("research");
+  let fetches = 0;
+  const ctx = createToolContext({
+    runId: "run-pdf-approval",
+    outputRoot: root,
+    events: bus,
+    permissions: policy,
+    approvals: new ApprovalRecorder(root, policy, bus),
+    approvalMode: "block",
+    stageId: "pdf_acquisition"
+  });
+  try {
+    const pending = registry.execute("pdf.acquire", {
+      outputRoot: root,
+      allowNetwork: true,
+      downloadPdfs: true,
+      fetchImpl: async () => {
+        fetches += 1;
+        return new Response("not a pdf", { status: 500 });
+      },
+      candidates: [
+        {
+          candidate_id: "paper-1",
+          title: "PDF Approval Paper",
+          authors: ["A. Researcher"],
+          year: 2026,
+          source_urls: ["https://arxiv.org/abs/1234.5678"],
+          pdf_urls: ["https://arxiv.org/pdf/1234.5678"],
+          retrieval_sources: ["test"],
+          retrieval_queries: ["pdf approval"],
+          confidence: "high"
+        }
+      ]
+    }, ctx);
+    const request = await waitForPendingApproval(root);
+    assert.equal(fetches, 0);
+    assert.equal(request.stage_id, "pdf_acquisition");
+    assert.ok(request.risk.includes("pdf_download"));
+    assert.ok(events.some((event) => event.type === "stage.blocked" && event.stage_id === "pdf_acquisition"));
+
+    await resolveApprovalRecord(root, request.id, "approved", { events: bus });
+    const manifest = await pending;
+    assert.equal(fetches, 1);
+    assert.equal(Array.isArray(manifest), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline generation persists artifact tool call records", async () => {
   const root = await mkdtemp(join(tmpdir(), "idea2repo-tools-generate-"));
   const output = join(root, "project");

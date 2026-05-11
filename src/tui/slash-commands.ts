@@ -149,9 +149,9 @@ export const slashCommands: SlashCommand[] = [
   },
   {
     name: "/mode",
-    usage: "/mode plan|generate|publish",
+    usage: "/mode research|plan|generate|publish",
     description: "Show or change runtime mode when approval support is available.",
-    arguments: ["plan", "generate", "publish"]
+    arguments: ["research", "plan", "generate", "publish"]
   },
   {
     name: "/approvals",

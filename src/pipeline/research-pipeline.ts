@@ -824,7 +824,8 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     agentScore,
     agentFeasibility,
     agentStrategy,
-    templatePackage
+    templatePackage,
+    decisionSummaries
     }),
     ...preservableOutputArtifacts(preservedOutputArtifacts),
     ...preservedPaperNoteArtifacts(resumedArtifacts, trustedPaperNotePaths)
@@ -926,6 +927,7 @@ function pipelineArtifacts(input: {
   agentFeasibility: FeasibilityReview | null;
   agentStrategy: ResearchStrategy | null;
   templatePackage: PipelineTemplatePackage;
+  decisionSummaries: string[];
 }): Record<string, string> {
   const verifiedPapers = verifiedPaperRecords(input.candidates, input.manifest, input.evidenceRows);
   const verifiedPaperIds = new Set(verifiedPapers.map((paper) => paper.paper_id));
@@ -938,13 +940,16 @@ function pipelineArtifacts(input: {
   const firstFourWeekPlan = input.agentStrategy ? agentFirstFourWeekPlanMarkdown(input.agentStrategy) : "# First 4 Week Plan\n\n1. Plan search and triage candidates.\n2. Acquire and read PDFs.\n3. Build evidence matrices.\n4. Lock experiments and paper story.\n";
   const paperStory = input.agentStrategy ? `# Paper Story\n\n${input.agentStrategy.paper_story}\n` : "# Paper Story\n\nPaper story is blocked until related work, novelty, and experiment evidence are verified.\n";
   const scorecard = `${strictScoreMarkdown(input.score)}${input.agentScore ? `\n## Agent Review\n\n${agentScoreMarkdown(input.agentScore)}` : ""}\nStrict mode: ${input.strict ? "enabled" : "disabled"}\n`;
+  const readinessReport = canonicalReadinessReportMarkdown(input);
+  const executionPlan = canonicalExecutionPlanMarkdown(input);
   return {
-    "reports/ccf_a_readiness_report.md": canonicalReadinessReportMarkdown(input),
+    "reports/ccf_a_readiness_report.md": readinessReport,
     "reports/novelty_matrix.md": noveltyReport,
     "reports/related_work.md": canonicalRelatedWorkReportMarkdown(input, relatedWorkReport),
     "reports/evidence_ledger.md": canonicalEvidenceLedgerMarkdown(input),
-    "plans/12_week_execution_plan.md": canonicalExecutionPlanMarkdown(input),
+    "plans/12_week_execution_plan.md": executionPlan,
     "plans/experiment_plan.md": experimentPlan,
+    "docs/diagnosis/ccf_a_readiness_report.md": readinessReport,
     "paper/abstract.md": paperAbstractMarkdown(input),
     "paper/related_work.md": paperRelatedWorkMarkdown(input, relatedWorkReport),
     "papers/papers.bib": referencesBib(verifiedPapers),
@@ -968,6 +973,7 @@ function pipelineArtifacts(input: {
     "docs/diagnosis/feasibility_report.md": feasibilityReport,
     "docs/diagnosis/reviewer_panel.md": agentReviewerPanelMarkdown(input.agentRelatedWork, input.agentNovelty, input.agentScore, input.agentFeasibility),
     "docs/proposal/experiment_plan.md": experimentPlan,
+    "docs/execution_plan/12_week_plan.md": executionPlan,
     "docs/proposal/revised_idea.md": revisedIdea,
     "docs/proposal/first_4_week_plan.md": firstFourWeekPlan,
     "docs/proposal/paper_story.md": paperStory,
@@ -1031,7 +1037,14 @@ ${numberedMarkdown(input.score.path_to_80)}
 ## Compatibility Mirrors
 
 Legacy \`docs/...\` artifacts remain available for existing CLI and API consumers.
+
+${runtimeDecisionTraceMarkdown(input.decisionSummaries)}
 `;
+}
+
+function runtimeDecisionTraceMarkdown(summaries: string[]): string {
+  if (!summaries.length) return "## Runtime Decision Trace\n\nNo runtime decisions were recorded for this report.\n";
+  return `## Runtime Decision Trace\n\n${summaries.slice(0, 10).map((summary) => `- ${summary}`).join("\n")}\n`;
 }
 
 function canonicalRelatedWorkReportMarkdown(input: PipelineArtifactInput, relatedWorkReport: string): string {

@@ -267,11 +267,14 @@ export function createCoreToolRegistry(): ToolRegistry {
   registry.register<PdfAcquireToolInput, PdfManifestRecord[]>({
     name: "pdf.acquire",
     description: "Acquire public PDFs and write validated downloads into the generated repository.",
-    risk: (input) => [
-      "read",
-      ...(input.downloadPdfs ? ["write" as const] : []),
-      ...(input.allowNetwork && input.downloadPdfs ? ["network" as const] : [])
-    ],
+    risk: (input) => {
+      const downloadsRequested = Boolean(input.downloadPdfs && input.candidates.length);
+      return [
+        "read",
+        ...(downloadsRequested ? ["write" as const, "pdf_download" as const] : []),
+        ...(input.allowNetwork && downloadsRequested ? ["network" as const] : [])
+      ];
+    },
     inputSchema: { type: "object", required: ["candidates", "outputRoot"], properties: { candidates: { type: "array" }, outputRoot: { type: "string" }, allowNetwork: { type: "boolean" }, downloadPdfs: { type: "boolean" } } },
     summarizeInput: (input) => `candidates=${input.candidates.length}; download_pdfs=${Boolean(input.downloadPdfs)}; allow_network=${Boolean(input.allowNetwork)}`,
     summarizeOutput: (output) => `pdf_records=${output.length}; downloaded=${output.filter((record) => record.status === "downloaded").length}`,
