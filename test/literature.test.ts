@@ -58,11 +58,16 @@ test("literature search orchestrates mocked adapters without real network", asyn
   assert.equal(result.candidates[0]?.doi, "10.1000/agent");
   assert.equal(result.candidates[0]?.retrieval_sources.sort().join(","), "crossref,openalex");
   assert.equal(result.candidates[0]?.ccf_rank, "A");
+  assert.equal(result.candidates[0]?.ccf_gate_status, "included");
+  assert.equal(result.candidates[0]?.main_track_eligible, true);
+  assert.equal(result.ccf_gate.preliminary_only, true);
+  assert.equal(result.ccf_gate.required_core_count, 8);
   assert.equal(result.candidates[0]?.venue_match, "primary");
   assert.equal(result.candidates[0]?.track_status, "main_conference");
   assert.equal(result.candidates[0]?.pdf_status, "available");
   assert.match(result.search_report, /Agent Benchmark Evaluation/);
-  assert.match(result.search_report, /Track/);
+  assert.match(result.search_report, /Main\/Full Eligible/);
+  assert.match(result.search_report, /Inclusion Reason/);
   assert.match(result.search_report, /baseline dataset metric/);
   const record = paperCandidateToRecord(result.candidates[0]!, 0);
   assert.equal(record.title, "Agent Benchmark Evaluation");
@@ -108,6 +113,10 @@ test("venue enrichment normalizes CCF-A aliases and detects ineligible tracks", 
   assert.equal(main.ccf_rank, "A");
   assert.equal(main.venue_match, "target");
   assert.equal(main.track_status, "main_conference");
+  assert.equal(main.main_track_eligible, true);
+  assert.equal(main.ccf_gate_status, "included");
+  assert.match(main.inclusion_reason ?? "", /main\/full\/regular eligible/);
+  assert.ok(main.source_provenance?.includes("ccf_seed"));
   assert.equal(main.novelty_risk, "high");
   assert.match(main.reason ?? "", /CCF-A/);
 
@@ -122,6 +131,9 @@ test("venue enrichment normalizes CCF-A aliases and detects ineligible tracks", 
   });
   assert.equal(workshop.venue, "NeurIPS");
   assert.equal(workshop.track_status, "workshop");
+  assert.equal(workshop.main_track_eligible, false);
+  assert.equal(workshop.ccf_gate_status, "excluded");
+  assert.match(workshop.exclusion_reason ?? "", /not an eligible full\/regular track/);
   assert.equal(workshop.pdf_status, "unavailable");
 
   const portal = enrichCandidate(candidate({ title: "Portal result", venue: "ACL Anthology" }));
@@ -133,6 +145,31 @@ test("venue enrichment normalizes CCF-A aliases and detects ineligible tracks", 
 
   const short = enrichCandidate(candidate({ title: "Agent Benchmark Short Paper", venue: "ACL" }));
   assert.equal(short.track_status, "short_paper");
+});
+
+test("literature search keeps preliminary mode until eight CCF-A main-track papers qualify", async () => {
+  const result = await searchLiteratureAsync({
+    query: "agent benchmark",
+    allowNetwork: true,
+    limit: 8,
+    sources: ["openalex"],
+    idea: "agent benchmark",
+    fetchImpl: async () => json({
+      results: [
+        openAlexWork("main", "Main Agent Benchmark", "NeurIPS"),
+        ...Array.from({ length: 7 }, (_, index) => openAlexWork(`workshop-${index}`, `Workshop Agent Benchmark ${index + 1}`, "NeurIPS Workshop"))
+      ]
+    })
+  });
+  assert.equal(result.candidates.length, 8);
+  assert.equal(result.ccf_gate.eligible_core_count, 1);
+  assert.equal(result.ccf_gate.preliminary_only, true);
+  assert.match(result.warnings.join("\n"), /qualified CCF-A main\/full core papers/);
+  assert.match(result.search_report, /Gate/);
+  assert.match(result.search_report, /Provenance/);
+  assert.match(result.search_report, /Exclusion Reason/);
+  assert.equal(result.candidates.filter((item) => item.ccf_gate_status === "included").length, 1);
+  assert.equal(result.candidates.filter((item) => item.track_status === "workshop").length, 7);
 });
 
 test("venue-aware ranking favors target main-conference candidates over workshops", () => {
@@ -256,6 +293,17 @@ test("literature source validation rejects unknown adapters", () => {
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function openAlexWork(id: string, title: string, venue: string): Record<string, unknown> {
+  return {
+    id: `https://openalex.org/${id}`,
+    title,
+    publication_year: 2026,
+    authorships: [{ author: { display_name: "Ada Lovelace" } }],
+    primary_location: { source: { display_name: venue }, landing_page_url: `https://openalex.org/${id}`, pdf_url: `https://example.org/${id}.pdf` },
+    open_access: { oa_url: `https://example.org/${id}.pdf` }
+  };
 }
 
 function candidate(overrides: Partial<LiteraturePaperCandidate>): LiteraturePaperCandidate {

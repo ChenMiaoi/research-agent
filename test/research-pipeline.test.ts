@@ -46,7 +46,7 @@ test("offline research pipeline returns resumable stage state and core artifacts
   assert.match(result.artifacts["paper/abstract.md"] ?? "", /Abstract Draft/);
   assert.match(result.artifacts["paper/related_work.md"] ?? "", /Related Work Draft/);
   assert.match(result.artifacts["papers/papers.bib"] ?? "", /Do not invent paper titles/);
-  assert.ok(result.artifacts["docs/diagnosis/ccf_a_strict_scorecard.md"]?.includes("Strict mode: enabled"));
+  assert.ok(result.artifacts["docs/diagnosis/ccf_a_strict_scorecard.md"]?.includes("Strict mode: preliminary-only (CCF-A venue gate blocked)"));
   assert.ok(result.artifacts["docs/diagnosis/clarification_questions.md"]?.includes("Why it matters"));
   assert.ok(result.artifacts["docs/diagnosis/feasibility_report.md"]);
   assert.ok(result.artifacts["docs/proposal/revised_idea.md"]);
@@ -377,6 +377,125 @@ test("research pipeline blocks resumed candidate triage below eight candidates",
     assert.equal(result.state.stages.find((stage) => stage.id === "candidate_triage")?.status, "skipped");
     assert.doesNotMatch(result.artifacts["docs/relative_work/triage_report.md"] ?? "", /STALE_TRIAGE/);
     assert.match(result.warnings.join("\n"), /Candidate triage gate blocked/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline blocks candidate triage when eight candidates are not CCF-A main track", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-ccf-gate-"));
+  const idea = "Build an LLM agent benchmark.";
+  try {
+    const candidates = [
+      pipelineCandidate("ccf-main-1", "Main Agent Benchmark", "NeurIPS"),
+      ...Array.from({ length: 7 }, (_, index) => pipelineCandidate(`ccf-workshop-${index + 1}`, `Workshop Agent Benchmark ${index + 1}`, "NeurIPS Workshop"))
+    ];
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify(candidates, null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nEight raw candidates but only one CCF-A main track candidate.\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    await writeResearchPipelineState(root, state);
+    const calls: string[] = [];
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "openai-codex",
+      agentClient: noEvidenceAgent(calls),
+      strictCcfA: true
+    });
+    assert.equal(calls.includes("triagePaperCandidates"), false);
+    assert.equal(result.state.stages.find((stage) => stage.id === "candidate_triage")?.status, "skipped");
+    assert.match(result.warnings.join("\n"), /qualified CCF-A main\/full core papers/);
+    assert.match(result.artifacts["docs/diagnosis/ccf_a_strict_scorecard.md"] ?? "", /preliminary-only \(CCF-A venue gate blocked\)/);
+    const persistedCandidates = JSON.parse(result.artifacts["docs/relative_work/candidates.json"] ?? "[]") as Array<{ ccf_gate_status?: string }>;
+    assert.equal(persistedCandidates.filter((candidate) => candidate.ccf_gate_status === "included").length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline keeps verified evidence runs preliminary when CCF-A gate is blocked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-ccf-preliminary-evidence-"));
+  const idea = "Build an LLM agent benchmark.";
+  const quote = "Verified gate evidence compares a baseline on a dataset with an accuracy metric and experiment plan.";
+  try {
+    await writeValidPdfProvenance(root, "ccf-main-1", `${quote} The paper also discusses limitations and reproducibility.`);
+    const candidates = [
+      pipelineCandidate("ccf-main-1", "Main Agent Benchmark", "NeurIPS", ["https://arxiv.org/pdf/ccf-main-1"]),
+      ...Array.from({ length: 7 }, (_, index) => pipelineCandidate(`ccf-workshop-${index + 1}`, `Workshop Agent Benchmark ${index + 1}`, "NeurIPS Workshop"))
+    ];
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify(candidates, null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nVerified evidence exists, but the CCF-A venue gate is still below eight.\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    state = markStage(state, "pdf_acquisition", "completed");
+    await writeResearchPipelineState(root, state);
+    const calls: string[] = [];
+    const agent = {
+      ...noEvidenceAgent(calls),
+      readPaperPdf: async () => {
+        calls.push("readPaperPdf");
+        return withAgentMeta({
+          paper_note: {
+            paper_id: "ccf-main-1",
+            title_verified: true,
+            summary: "Verified gate evidence summary",
+            main_problem: "Benchmark evaluation",
+            core_method: "Evidence-gated benchmark",
+            main_claims: [{ claim: "Uses baseline, dataset, metric, and experiment evidence.", evidence_quote: quote, page: 1, confidence: "high" as const }],
+            datasets: ["dataset"],
+            baselines: ["baseline"],
+            metrics: ["accuracy metric"],
+            strengths: [],
+            weaknesses: [],
+            limitations: ["limitation"],
+            relevance_to_current_idea: "relevant",
+            difference_from_current_idea: "different",
+            collision_risk: "low" as const,
+            useful_for: ["related work"],
+            unreadable_or_missing_parts: []
+          }
+        });
+      },
+      analyzeRelatedWork: async () => {
+        calls.push("analyzeRelatedWork");
+        return withAgentMeta({
+          related_work: {
+            topic_clusters: [],
+            related_work_matrix_rows: [],
+            reviewer_expected_baselines: ["baseline"],
+            evaluation_conventions: ["accuracy"],
+            evidence_warnings: []
+          }
+        });
+      },
+      analyzeNovelty: async () => {
+        calls.push("analyzeNovelty");
+        throw new Error("novelty agent must be blocked by CCF-A venue gate");
+      },
+      scoreCcfA: async () => {
+        calls.push("scoreCcfA");
+        throw new Error("strict score agent must be blocked by CCF-A venue gate");
+      },
+      refineIdea: async () => {
+        calls.push("refineIdea");
+        throw new Error("strategy agent must be blocked by CCF-A venue gate");
+      }
+    };
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "openai-codex",
+      agentClient: agent,
+      strictCcfA: true
+    });
+    assert.equal(calls.includes("readPaperPdf"), true);
+    assert.equal(calls.includes("analyzeRelatedWork"), true);
+    assert.equal(calls.includes("analyzeNovelty"), false);
+    assert.equal(calls.includes("scoreCcfA"), false);
+    assert.equal(calls.includes("refineIdea"), false);
+    assert.equal(result.state.stages.find((stage) => stage.id === "novelty_analysis")?.status, "skipped");
+    assert.equal(result.state.stages.find((stage) => stage.id === "better_idea_synthesis")?.status, "skipped");
+    assert.match(result.artifacts["docs/diagnosis/ccf_a_strict_scorecard.md"] ?? "", /preliminary-only \(CCF-A venue gate blocked\)/);
+    assert.match(result.artifacts["reports/ccf_a_readiness_report.md"] ?? "", /preliminary only; verified strict CCF-A path is blocked/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -736,7 +855,13 @@ test("research pipeline preserves trusted resumed analysis artifacts", async () 
   const idea = "Build an LLM agent benchmark.";
   try {
     const chunks = await writeValidPdfProvenance(root, "paper-1", "unique trusted analysis evidence compares a baseline on a dataset with an accuracy metric and a limitation.");
+    const candidates = [
+      pipelineCandidate("paper-1", "Preserved Main Agent Benchmark", "NeurIPS", ["https://arxiv.org/pdf/paper-1"]),
+      ...Array.from({ length: 7 }, (_, index) => pipelineCandidate(`preserved-main-${index + 2}`, `Preserved Main Agent Benchmark ${index + 2}`, "NeurIPS"))
+    ];
     const note = "# paper-1\n\n## Problem\n\nVerified problem.\n\n## Method\n\nVerified method.\n\n## Claims And Evidence\n\n- Claim: preserved\n  - Page: 1\n  - Quote: unique trusted analysis evidence\n  - Chunk: p1-c1\n\n## Limitations\n\nVerified limitation.\n";
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify(candidates, null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nEight CCF-A main-track candidates allow strict analysis resume.\n");
     await writeArtifact(root, "docs/reference/paper_notes/README.md", "# Paper Notes\n\nResumed.\n");
     await writeArtifact(root, "docs/reference/paper_notes/paper-1.md", note);
     await writeArtifact(root, "docs/reference/pdf_chunks.json", JSON.stringify(chunks, null, 2) + "\n");
@@ -749,6 +874,7 @@ test("research pipeline preserves trusted resumed analysis artifacts", async () 
     await writeArtifact(root, "docs/proposal/first_4_week_plan.md", "# UNIQUE_FIRST_FOUR_WEEKS\n");
     await writeArtifact(root, "docs/proposal/paper_story.md", "# UNIQUE_PAPER_STORY\n");
     let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
     state = markStage(state, "pdf_acquisition", "completed");
     state = markStage(state, "pdf_reading", "completed");
     state = markStage(state, "related_work_analysis", "completed");
@@ -976,6 +1102,21 @@ function sampleSearchPlan() {
     venue_queries: [query("NeurIPS agent benchmark")],
     collision_queries: [query("agent benchmark prior work")],
     stop_condition: "enough candidates"
+  };
+}
+
+function pipelineCandidate(candidateId: string, title: string, venue: string, pdfUrls: string[] = []) {
+  return {
+    candidate_id: candidateId,
+    title,
+    authors: ["A. Researcher"],
+    year: 2026,
+    venue,
+    source_urls: [`https://example.test/${candidateId}`],
+    pdf_urls: pdfUrls,
+    retrieval_sources: ["test"],
+    retrieval_queries: ["agent benchmark"],
+    confidence: "high" as const
   };
 }
 

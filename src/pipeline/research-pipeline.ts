@@ -40,7 +40,7 @@ import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from
 import { assessNovelty, noveltyMatrixMarkdown } from "../skills/analysis/novelty-matrix.js";
 import { relatedWorkMatrixCsv, topicClustersMarkdown } from "../skills/analysis/related-work-matrix.js";
 import type { LiteratureSource, PaperCandidate } from "../skills/literature/types.js";
-import { enrichCandidates } from "../skills/literature/venue.js";
+import { enrichCandidates, isCcfACoreCandidate } from "../skills/literature/venue.js";
 import type { PdfChunkIndexEntry } from "../skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
 import { pdfChunksEqual, validateDownloadedPdfManifest } from "../skills/pdf/trust.js";
@@ -382,8 +382,9 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   }
 
   let agentTriage: CandidateTriage | null = null;
-  const candidateTriageGatePassed = candidates.length >= 8;
-  if (candidates.length > 0 && !candidateTriageGatePassed) warnings.push(`Candidate triage gate blocked: ${candidates.length} candidates found; at least 8 core papers are required before triage.`);
+  const ccfVenueGate = ccfVenueGateStatus(candidates);
+  const candidateTriageGatePassed = !ccfVenueGate.preliminary_only;
+  if (candidates.length > 0 && !candidateTriageGatePassed) warnings.push(`Candidate triage gate blocked: ${ccfVenueGate.eligible_core_count} qualified CCF-A main/full core papers found out of ${candidates.length} candidates; at least ${ccfVenueGate.required_core_count} are required before verified strict CCF-A novelty/scoring.`);
   if ((await canResumeStage("candidate_triage")) && candidateTriageGatePassed) {
     await preserveStageArtifacts("candidate_triage");
   } else {
@@ -402,13 +403,13 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       title: "Candidate triage scope selected",
       rationale_summary: agentTriage
         ? `Marked ${agentTriage.must_read_core_papers.length} must-read papers, ${agentTriage.weakly_related.length} weakly-related papers, and ${agentTriage.duplicates.length} duplicates.`
-        : `Candidate triage was skipped because ${candidates.length ? "fewer than 8 core candidates were available" : "no literature candidates were collected"}.`,
-      inputs_considered: [`candidate_count=${candidates.length}`, `triage_gate=${candidateTriageGatePassed ? "passed" : "blocked"}`],
+        : `Candidate triage was skipped because ${candidates.length ? "fewer than 8 qualified CCF-A main/full core papers were available" : "no literature candidates were collected"}.`,
+      inputs_considered: [`candidate_count=${candidates.length}`, `ccf_a_core_count=${ccfVenueGate.eligible_core_count}`, `triage_gate=${candidateTriageGatePassed ? "passed" : "blocked"}`],
       evidence_refs: [{ artifact: "docs/relative_work/candidates.json" }, { artifact: "docs/relative_work/triage_report.md" }],
       alternatives: [{ option: "Treat all candidates as equally important", why_not: "Reviewer-facing related work needs explicit must-read, weakly-related, duplicate, and missing-area distinctions." }],
       confidence: candidateTriageGatePassed && agentTriage ? "medium" : "high"
     });
-    await setStage("candidate_triage", candidateTriageGatePassed ? "completed" : "skipped", candidateTriageGatePassed ? undefined : candidates.length ? "At least 8 core papers are required before triage." : "No literature candidates were collected.");
+    await setStage("candidate_triage", candidateTriageGatePassed ? "completed" : "skipped", candidateTriageGatePassed ? undefined : candidates.length ? "At least 8 qualified CCF-A main/full core papers are required before triage." : "No literature candidates were collected.");
   }
 
   let manifest: PdfManifestRecord[];
@@ -554,7 +555,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
 
   const novelty = assessNovelty(idea, candidates, evidenceRows, chunks);
   let agentNovelty: NoveltyGapAnalysis | null = null;
-  const noveltyResumed = (await canResumeStage("novelty_analysis")) && relatedWorkAvailable;
+  const noveltyResumed = !ccfVenueGate.preliminary_only && (await canResumeStage("novelty_analysis")) && relatedWorkAvailable;
   let noveltyAvailable = false;
   if (noveltyResumed) {
     await preserveStageArtifacts("novelty_analysis");
@@ -562,7 +563,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   } else {
     await setStage("novelty_analysis", "running");
     agentNovelty =
-      hasVerifiedPdfEvidence && agentRelatedWork
+      hasVerifiedPdfEvidence && agentRelatedWork && !ccfVenueGate.preliminary_only
         ? await stagedOrFallback(
             () => agent?.analyzeNovelty(idea, agentRelatedWork, options.progress).then((result) => result.novelty),
             () => null,
@@ -571,7 +572,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
             options.signal
           )
         : null;
-    await setStage("novelty_analysis", agentNovelty ? "completed" : "skipped", agentNovelty ? undefined : "Verified related-work analysis is required before novelty agent analysis.");
+    await setStage("novelty_analysis", agentNovelty ? "completed" : "skipped", agentNovelty ? undefined : ccfVenueGate.preliminary_only ? "At least 8 qualified CCF-A main/full core papers are required before verified novelty analysis." : "Verified related-work analysis is required before novelty agent analysis.");
     await recordDecision({
       stage_id: "novelty_analysis",
       title: "Novelty collision risk assessed",
@@ -587,11 +588,12 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   }
 
   const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
+  const verifiedCcfACorePaperCount = verifiedQualifiedCcfACorePaperCount(candidates, evidenceRows);
   const evidence = evidenceText(evidenceRows);
   const scoreInput: StrictScoreInput = {
     verifiedRelatedWorkCount: verifiedPaperCount,
     pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
-    corePaperCount: verifiedPaperCount,
+    corePaperCount: verifiedCcfACorePaperCount,
     evidenceRefs: evidenceItems.map((item) => item.id),
     hasStrongBaseline: evidence.includes("baseline"),
     hasDatasetOrBenchmark: evidence.includes("dataset") || evidence.includes("benchmark"),
@@ -627,10 +629,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     timestamp: runtimeTimestamp()
   });
   let agentScore: StrictCcfAReview | null = null;
-  const strictScoreResumed = canResumePdfReading && hasVerifiedPdfEvidence && (await canResumeStage("ccf_a_strict_scoring"));
+  const strictScoreResumed = canResumePdfReading && hasVerifiedPdfEvidence && !ccfVenueGate.preliminary_only && (await canResumeStage("ccf_a_strict_scoring"));
   if (!strictScoreResumed) {
     await setStage("ccf_a_strict_scoring", "running");
-    agentScore = hasVerifiedPdfEvidence
+    agentScore = hasVerifiedPdfEvidence && !ccfVenueGate.preliminary_only
       ? await stagedOrFallback(
           () => agent?.scoreCcfA(idea, { evidence_rows: evidenceRows, strict_score: score, novelty }, options.progress).then((result) => result.scorecard),
           () => null,
@@ -642,8 +644,8 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     await recordDecision({
       stage_id: "ccf_a_strict_scoring",
       title: "Strict CCF-A score capped by evidence",
-      rationale_summary: `Strict score is ${score.total}/100 with caps: ${score.caps.map((cap) => cap.reason).join("; ") || "none"}.`,
-      inputs_considered: [`verified_papers=${verifiedPaperCount}`, `pdf_chunks=${chunks.length}`, `collision=${novelty.collision_risk}`],
+      rationale_summary: `${ccfVenueGate.preliminary_only ? "Preliminary score" : "Strict score"} is ${score.total}/100 with caps: ${score.caps.map((cap) => cap.reason).join("; ") || "none"}.`,
+      inputs_considered: [`verified_papers=${verifiedPaperCount}`, `verified_ccf_a_core_papers=${verifiedCcfACorePaperCount}`, `ccf_a_core_candidates=${ccfVenueGate.eligible_core_count}`, `pdf_chunks=${chunks.length}`, `collision=${novelty.collision_risk}`],
       evidence_refs: [{ artifact: "docs/diagnosis/ccf_a_strict_scorecard.md" }, { artifact: "docs/reference/claim_evidence_matrix.csv" }],
       alternatives: [{ option: "Score from ambition only", why_not: "The strict rubric caps claims without verified related-work and PDF evidence." }],
       confidence: hasVerifiedPdfEvidence ? "medium" : "high"
@@ -745,12 +747,12 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   ];
 
   let agentStrategy: ResearchStrategy | null = null;
-  const strategyResumed = (await canResumeStage("better_idea_synthesis")) && relatedWorkAvailable && noveltyAvailable;
+  const strategyResumed = !ccfVenueGate.preliminary_only && (await canResumeStage("better_idea_synthesis")) && relatedWorkAvailable && noveltyAvailable;
   if (strategyResumed) {
     await preserveStageArtifacts("better_idea_synthesis");
   } else {
     await setStage("better_idea_synthesis", "running");
-    agentStrategy = hasVerifiedPdfEvidence && agentRelatedWork && (agentNovelty ?? novelty)
+    agentStrategy = hasVerifiedPdfEvidence && agentRelatedWork && !ccfVenueGate.preliminary_only && (agentNovelty ?? novelty)
       ? await stagedOrFallback(
           () => agent?.refineIdea(idea, { novelty: agentNovelty ?? novelty, score, feasibility: agentFeasibility, related_work: agentRelatedWork }, options.progress).then((result) => result.strategy),
           () => null,
@@ -759,7 +761,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
           options.signal
         )
       : null;
-    await setStage("better_idea_synthesis", agentStrategy ? "completed" : "skipped", agentStrategy ? undefined : "Research strategy is blocked until verified related work and novelty analysis exist.");
+    await setStage("better_idea_synthesis", agentStrategy ? "completed" : "skipped", agentStrategy ? undefined : ccfVenueGate.preliminary_only ? "At least 8 qualified CCF-A main/full core papers are required before strict strategy synthesis." : "Research strategy is blocked until verified related work and novelty analysis exist.");
     await recordDecision({
       stage_id: "better_idea_synthesis",
       title: "Research strategy revision selected",
@@ -805,6 +807,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     ideaBrief,
     searchPlan,
     candidates,
+    ccfVenueGate,
     manifest,
     chunks,
     evidenceRows,
@@ -907,6 +910,7 @@ function pipelineArtifacts(input: {
   ideaBrief: IdeaBrief;
   searchPlan: SearchPlan;
   candidates: PaperCandidate[];
+  ccfVenueGate: LiteratureSearchResult["ccf_gate"];
   manifest: PdfManifestRecord[];
   chunks: Array<{ paper_id: string; chunk_id: string; page: number; text: string }>;
   evidenceRows: ReturnType<typeof extractEvidenceRows>;
@@ -939,7 +943,7 @@ function pipelineArtifacts(input: {
   const revisedIdea = input.agentStrategy ? agentStrategyRevisedIdeaMarkdown(input.agentStrategy) : revisedIdeaMarkdown(input.idea, input.novelty, input.score);
   const firstFourWeekPlan = input.agentStrategy ? agentFirstFourWeekPlanMarkdown(input.agentStrategy) : "# First 4 Week Plan\n\n1. Plan search and triage candidates.\n2. Acquire and read PDFs.\n3. Build evidence matrices.\n4. Lock experiments and paper story.\n";
   const paperStory = input.agentStrategy ? `# Paper Story\n\n${input.agentStrategy.paper_story}\n` : "# Paper Story\n\nPaper story is blocked until related work, novelty, and experiment evidence are verified.\n";
-  const scorecard = `${strictScoreMarkdown(input.score)}${input.agentScore ? `\n## Agent Review\n\n${agentScoreMarkdown(input.agentScore)}` : ""}\nStrict mode: ${input.strict ? "enabled" : "disabled"}\n`;
+  const scorecard = `${strictScoreMarkdown(input.score)}${input.agentScore ? `\n## Agent Review\n\n${agentScoreMarkdown(input.agentScore)}` : ""}\n## CCF-A Venue Gate\n\n- Qualified CCF-A main/full core papers: ${input.ccfVenueGate.eligible_core_count} / ${input.ccfVenueGate.required_core_count}\n- Scoring mode: ${input.ccfVenueGate.preliminary_only ? "preliminary only" : "verified strict CCF-A"}\n\nStrict mode: ${input.strict && !input.ccfVenueGate.preliminary_only ? "enabled" : input.strict ? "preliminary-only (CCF-A venue gate blocked)" : "disabled"}\n`;
   const readinessReport = canonicalReadinessReportMarkdown(input);
   const executionPlan = canonicalExecutionPlanMarkdown(input);
   return {
@@ -1000,6 +1004,8 @@ ${input.ideaBrief.idea_summary}
 - Novelty collision risk: ${input.novelty.collision_risk}
 - Verified evidence rows: ${input.evidenceRows.filter((row) => row.status === "verified").length}
 - Candidate papers: ${input.candidates.length}
+- Qualified CCF-A main/full core papers: ${input.ccfVenueGate.eligible_core_count} / ${input.ccfVenueGate.required_core_count}
+- Scoring mode: ${input.ccfVenueGate.preliminary_only ? "preliminary only; verified strict CCF-A path is blocked" : "verified strict CCF-A"}
 - Downloaded PDFs: ${input.manifest.filter((record) => record.status === "downloaded").length}
 
 ## Hard Blockers
@@ -1023,6 +1029,7 @@ ${numberedMarkdown(input.score.path_to_80)}
 - Baselines evidence-backed: ${input.baselineRecommendations.length ? "yes" : "no"}
 - Datasets evidence-backed: ${input.datasetRecommendations.length ? "yes" : "no"}
 - Metrics evidence-backed: ${input.metricRecommendations.length ? "yes" : "no"}
+- CCF-A venue gate: ${input.ccfVenueGate.preliminary_only ? "blocked; collect at least 8 qualified CCF-A main/full core papers" : "passed"}
 
 ## Canonical Artifact Bundle
 
@@ -1056,6 +1063,7 @@ function canonicalRelatedWorkReportMarkdown(input: PipelineArtifactInput, relate
 ## Candidate Summary
 
 - Retrieved candidates: ${input.candidates.length}
+- Qualified CCF-A main/full core candidates: ${input.ccfVenueGate.eligible_core_count}
 - Verified PDF-backed papers: ${verifiedCount}
 - Evidence-backed candidates used below: ${verifiedCount}
 
@@ -1804,8 +1812,26 @@ function agentScoreMarkdown(score: StrictCcfAReview): string {
 `;
 }
 
+function ccfVenueGateStatus(candidates: PaperCandidate[]): LiteratureSearchResult["ccf_gate"] {
+  const eligibleCoreCount = candidates.filter(isCcfACoreCandidate).length;
+  return {
+    eligible_core_count: eligibleCoreCount,
+    required_core_count: 8,
+    preliminary_only: eligibleCoreCount < 8
+  };
+}
+
 function verifiedEvidencePaperCount(rows: ReturnType<typeof extractEvidenceRows>): number {
   return new Set(rows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id).map((row) => row.paper_id)).size;
+}
+
+function verifiedQualifiedCcfACorePaperCount(candidates: PaperCandidate[], rows: ReturnType<typeof extractEvidenceRows>): number {
+  const qualifiedIds = new Set(candidates.filter(isCcfACoreCandidate).map((candidate) => safePaperId(candidate.candidate_id)));
+  return new Set(
+    rows
+      .filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id && qualifiedIds.has(safePaperId(row.paper_id)))
+      .map((row) => safePaperId(row.paper_id))
+  ).size;
 }
 
 function verifiedPaperRecords(candidates: PaperCandidate[], manifest: PdfManifestRecord[], rows: ReturnType<typeof extractEvidenceRows>): PaperRecord[] {

@@ -6,10 +6,12 @@ import { searchOpenAlex } from "./adapters/openalex.js";
 import { searchSemanticScholar } from "./adapters/semantic-scholar.js";
 import { dedupeCandidates } from "./dedupe.js";
 import { rankCandidates } from "./rank.js";
+import { isCcfACoreCandidate } from "./venue.js";
 import { throwIfAborted } from "../../runtime/abort.js";
 import type { LiteratureAdapterOptions, LiteratureAdapterResult, LiteratureSearchOptions, LiteratureSearchResult, LiteratureSource, PaperCandidate } from "./types.js";
 
 export const defaultLiteratureSources: LiteratureSource[] = ["openalex", "crossref", "arxiv", "dblp", "semantic-scholar", "acl-anthology"];
+const REQUIRED_CCF_A_CORE_PAPERS = 8;
 
 export async function searchLiteratureDeterministic(options: LiteratureSearchOptions): Promise<LiteratureSearchResult> {
   throwIfAborted(options.signal);
@@ -19,6 +21,7 @@ export async function searchLiteratureDeterministic(options: LiteratureSearchOpt
     return {
       candidates: [],
       warnings: queries.map((query) => `Network disabled. Search manually: ${query}`),
+      ccf_gate: { eligible_core_count: 0, required_core_count: REQUIRED_CCF_A_CORE_PAPERS, preliminary_only: true },
       search_report: searchReport([], queries, [`Network disabled. Search manually: ${queries.join("; ")}`])
     };
   }
@@ -28,17 +31,18 @@ export async function searchLiteratureDeterministic(options: LiteratureSearchOpt
   const results: LiteratureAdapterResult[] = [];
   let executedQueries = queries;
   await runQueries(queries, sources, perSourceLimit, fetchImpl, results, options.signal);
-  const gate = Math.min(8, limit);
   let candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" "), { targetVenues: options.targetVenues }).slice(0, limit);
-  if (candidates.length < gate) {
+  let ccfGate = ccfVenueGate(candidates);
+  if (ccfGate.eligible_core_count < ccfGate.required_core_count) {
     const expandedQueries = expandedRecallQueries(queries);
     executedQueries = [...queries, ...expandedQueries];
     await runQueries(expandedQueries, sources, perSourceLimit, fetchImpl, results, options.signal);
     candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" "), { targetVenues: options.targetVenues }).slice(0, limit);
+    ccfGate = ccfVenueGate(candidates);
   }
   const warnings = results.flatMap((result) => result.warnings);
-  if (candidates.length < gate) warnings.push(`Only ${candidates.length} candidates found after expanded recall queries; at least ${gate} core papers are required before novelty judgment.`);
-  return { candidates, warnings, search_report: searchReport(candidates, executedQueries, warnings) };
+  if (ccfGate.preliminary_only) warnings.push(`Only ${ccfGate.eligible_core_count} qualified CCF-A main/full core papers found after expanded recall queries; at least ${ccfGate.required_core_count} are required before verified strict CCF-A novelty/scoring.`);
+  return { candidates, ccf_gate: ccfGate, warnings, search_report: searchReport(candidates, executedQueries, warnings) };
 }
 
 export function searchReport(candidates: PaperCandidate[], queries: string[], warnings: string[] = []): string {
@@ -50,14 +54,23 @@ ${queries.map((query) => `- ${query}`).join("\n") || "- none"}
 
 ## Candidates
 
-| Rank | Title | Year | Venue | CCF | Match | Track | Novelty Risk | Sources | Score | PDF | Reason |
-| ---: | --- | ---: | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
-${(candidates.length ? candidates : []).map((candidate, index) => `| ${index + 1} | ${escapeCell(candidate.title)} | ${candidate.year ?? ""} | ${escapeCell(candidate.venue ?? "")} | ${candidate.ccf_rank ?? "unknown"} | ${candidate.venue_match ?? "unknown"} | ${candidate.track_status ?? "unknown"} | ${candidate.novelty_risk ?? "unknown"} | ${candidate.retrieval_sources.join("; ")} | ${candidate.relevance_score ?? ""} | ${candidate.pdf_status ?? (candidate.pdf_urls.length ? "available" : "unavailable")} | ${escapeCell(candidate.reason ?? "")} |`).join("\n") || "|  | No candidates yet |  |  |  |  |  |  |  |  |  |  |"}
+| Rank | Title | Year | Venue | CCF | Gate | Main/Full Eligible | Track | Novelty Risk | Provenance | Score | PDF | Inclusion Reason | Exclusion Reason | Reason |
+| ---: | --- | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |
+${(candidates.length ? candidates : []).map((candidate, index) => `| ${index + 1} | ${escapeCell(candidate.title)} | ${candidate.year ?? ""} | ${escapeCell(candidate.venue ?? "")} | ${candidate.ccf_rank ?? "unknown"} | ${candidate.ccf_gate_status ?? "excluded"} | ${candidate.main_track_eligible ? "yes" : "no"} | ${candidate.track_status ?? "unknown"} | ${candidate.novelty_risk ?? "unknown"} | ${(candidate.source_provenance ?? candidate.retrieval_sources).join("; ")} | ${candidate.relevance_score ?? ""} | ${candidate.pdf_status ?? (candidate.pdf_urls.length ? "available" : "unavailable")} | ${escapeCell(candidate.inclusion_reason ?? "")} | ${escapeCell(candidate.exclusion_reason ?? "")} | ${escapeCell(candidate.reason ?? "")} |`).join("\n") || "|  | No candidates yet |  |  |  |  |  |  |  |  |  |  |  |  |  |"}
 
 ## Warnings
 
 ${warnings.map((warning) => `- ${warning}`).join("\n") || "- none"}
 `;
+}
+
+function ccfVenueGate(candidates: PaperCandidate[]): LiteratureSearchResult["ccf_gate"] {
+  const eligibleCoreCount = candidates.filter(isCcfACoreCandidate).length;
+  return {
+    eligible_core_count: eligibleCoreCount,
+    required_core_count: REQUIRED_CCF_A_CORE_PAPERS,
+    preliminary_only: eligibleCoreCount < REQUIRED_CCF_A_CORE_PAPERS
+  };
 }
 
 function normalizeQueries(options: LiteratureSearchOptions): string[] {

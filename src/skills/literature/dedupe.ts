@@ -26,6 +26,11 @@ export function dedupeCandidates(candidates: PaperCandidate[]): PaperCandidate[]
     existing.track_status = trackStatus(existing.track_status, candidate.track_status);
     existing.novelty_risk = best(existing.novelty_risk, candidate.novelty_risk, { high: 4, medium: 3, low: 2, unknown: 1 });
     existing.pdf_status = best(existing.pdf_status, candidate.pdf_status, { downloaded: 4, available: 3, needs_approval: 2, unavailable: 1 });
+    existing.main_track_eligible ||= candidate.main_track_eligible;
+    existing.ccf_gate_status = best(existing.ccf_gate_status, candidate.ccf_gate_status, { included: 2, excluded: 1 });
+    existing.inclusion_reason ||= candidate.inclusion_reason;
+    existing.exclusion_reason = mergeReason(existing.exclusion_reason, candidate.exclusion_reason);
+    existing.source_provenance = union(existing.source_provenance ?? [], candidate.source_provenance ?? []);
     existing.reason = mergeReason(existing.reason, candidate.reason);
     existing.confidence = confidenceRank(existing.confidence) >= confidenceRank(candidate.confidence) ? existing.confidence : candidate.confidence;
   }

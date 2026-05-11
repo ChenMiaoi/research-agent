@@ -4,6 +4,7 @@ export type CandidateVenueMatch = "target" | "primary" | "secondary" | "ccf_a" |
 export type CandidateTrackStatus = "main_conference" | "journal" | "workshop" | "demo" | "short_paper" | "unknown";
 export type CandidateNoveltyRisk = "high" | "medium" | "low" | "unknown";
 export type CandidatePdfStatus = "available" | "unavailable" | "needs_approval" | "downloaded";
+export type CandidateCcfGateStatus = "included" | "excluded";
 
 export type PaperCandidate = {
   candidate_id: string;
@@ -28,6 +29,11 @@ export type PaperCandidate = {
   track_status?: CandidateTrackStatus;
   novelty_risk?: CandidateNoveltyRisk;
   reason?: string;
+  main_track_eligible?: boolean;
+  inclusion_reason?: string;
+  exclusion_reason?: string;
+  ccf_gate_status?: CandidateCcfGateStatus;
+  source_provenance?: string[];
   pdf_status?: CandidatePdfStatus;
 };
 
@@ -58,6 +64,11 @@ export type LiteratureSearchOptions = {
 
 export type LiteratureSearchResult = {
   candidates: PaperCandidate[];
+  ccf_gate: {
+    eligible_core_count: number;
+    required_core_count: number;
+    preliminary_only: boolean;
+  };
   warnings: string[];
   search_report: string;
 };

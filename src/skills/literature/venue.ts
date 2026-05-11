@@ -1,5 +1,5 @@
 import { loadVenueDatabase, type VenueDatabase, type VenueRecord } from "../../venues.js";
-import type { CandidateCcfRank, CandidateNoveltyRisk, CandidatePdfStatus, CandidateTrackStatus, CandidateVenueMatch, PaperCandidate } from "./types.js";
+import type { CandidateCcfGateStatus, CandidateCcfRank, CandidateNoveltyRisk, CandidatePdfStatus, CandidateTrackStatus, CandidateVenueMatch, PaperCandidate } from "./types.js";
 
 export type VenueResolution = {
   record: VenueRecord;
@@ -33,7 +33,10 @@ export function enrichCandidate(candidate: PaperCandidate, options: CandidateEnr
   const venueMatch = candidate.venue_match ?? venueMatchFor(resolution, targetResolutions);
   const pdfStatus = candidate.pdf_status ?? inferPdfStatus(candidate);
   const noveltyRisk = candidate.novelty_risk ?? inferNoveltyRisk(candidate, options.idea, venueMatch, trackStatus);
-  const reason = candidate.reason ?? enrichmentReason({ resolution, venueMatch, trackStatus, ccfRank, pdfStatus, noveltyRisk });
+  const mainTrackEligible = isEligibleMainTrack(trackStatus);
+  const gate = ccfGateFor({ ccfRank, trackStatus, mainTrackEligible, resolution });
+  const provenance = sourceProvenance(candidate, resolution);
+  const reason = candidate.reason ?? enrichmentReason({ resolution, venueMatch, trackStatus, ccfRank, pdfStatus, noveltyRisk, gateStatus: gate.status });
   return {
     ...candidate,
     venue: resolution?.canonical ?? candidate.venue,
@@ -42,6 +45,11 @@ export function enrichCandidate(candidate: PaperCandidate, options: CandidateEnr
     track_status: trackStatus,
     novelty_risk: noveltyRisk,
     pdf_status: pdfStatus,
+    main_track_eligible: candidate.main_track_eligible ?? mainTrackEligible,
+    ccf_gate_status: candidate.ccf_gate_status ?? gate.status,
+    inclusion_reason: candidate.inclusion_reason ?? gate.inclusionReason,
+    exclusion_reason: candidate.exclusion_reason ?? gate.exclusionReason,
+    source_provenance: candidate.source_provenance ?? provenance,
     reason
   };
 }
@@ -76,6 +84,10 @@ export function normalizeVenueAlias(value: string): string {
 
 export function isMainTrackCandidate(candidate: PaperCandidate): boolean {
   return candidate.track_status === "main_conference" || candidate.track_status === "journal";
+}
+
+export function isCcfACoreCandidate(candidate: PaperCandidate): boolean {
+  return candidate.ccf_gate_status === "included" || (candidate.ccf_rank === "A" && (candidate.main_track_eligible ?? isMainTrackCandidate(candidate)));
 }
 
 function venueAliases(name: string, record: VenueRecord): string[] {
@@ -155,9 +167,61 @@ function enrichmentReason(input: {
   ccfRank: CandidateCcfRank;
   pdfStatus: CandidatePdfStatus;
   noveltyRisk: CandidateNoveltyRisk;
+  gateStatus: CandidateCcfGateStatus;
 }): string {
   const venue = input.resolution ? `${input.resolution.canonical} CCF-${input.ccfRank}` : "venue not matched to seed CCF database";
-  return `${venue}; venue_match=${input.venueMatch}; track_status=${input.trackStatus}; pdf_status=${input.pdfStatus}; novelty_risk=${input.noveltyRisk}`;
+  return `${venue}; ccf_gate=${input.gateStatus}; venue_match=${input.venueMatch}; track_status=${input.trackStatus}; pdf_status=${input.pdfStatus}; novelty_risk=${input.noveltyRisk}`;
+}
+
+function ccfGateFor(input: { ccfRank: CandidateCcfRank; trackStatus: CandidateTrackStatus; mainTrackEligible: boolean; resolution: VenueResolution | null }): {
+  status: CandidateCcfGateStatus;
+  inclusionReason?: string;
+  exclusionReason?: string;
+} {
+  if (input.ccfRank === "A" && input.mainTrackEligible) {
+    return {
+      status: "included",
+      inclusionReason: `${input.resolution?.canonical ?? "matched venue"} is CCF-A and main/full/regular eligible: track_status=${input.trackStatus}.`
+    };
+  }
+  if (input.ccfRank !== "A") {
+    return {
+      status: "excluded",
+      exclusionReason: input.ccfRank === "unknown" ? "Venue is not verified against the CCF seed database." : `Venue is CCF-${input.ccfRank}, not CCF-A.`
+    };
+  }
+  return {
+    status: "excluded",
+    exclusionReason: `CCF-A venue is not an eligible full/regular track: track_status=${input.trackStatus}.`
+  };
+}
+
+function sourceProvenance(candidate: PaperCandidate, resolution: VenueResolution | null): string[] {
+  const provenance = new Set<string>();
+  for (const source of candidate.retrieval_sources) provenance.add(source);
+  for (const url of candidate.source_urls) addUrlProvenance(provenance, url);
+  for (const url of candidate.pdf_urls) addUrlProvenance(provenance, url);
+  if (candidate.dblp_key) provenance.add("dblp");
+  if (candidate.doi) provenance.add("publisher");
+  if (candidate.openalex_id) provenance.add("openalex");
+  if (candidate.arxiv_id) provenance.add("arxiv");
+  if (resolution) provenance.add("ccf_seed");
+  return [...provenance].sort();
+}
+
+function isEligibleMainTrack(trackStatus: CandidateTrackStatus): boolean {
+  return trackStatus === "main_conference" || trackStatus === "journal";
+}
+
+function addUrlProvenance(provenance: Set<string>, url: string): void {
+  const normalized = url.toLowerCase();
+  if (normalized.includes("dblp.org")) provenance.add("dblp");
+  if (normalized.includes("openalex.org")) provenance.add("openalex");
+  if (normalized.includes("semanticscholar.org")) provenance.add("semantic-scholar");
+  if (normalized.includes("aclanthology.org")) provenance.add("acl-anthology");
+  if (normalized.includes("arxiv.org")) provenance.add("arxiv");
+  if (normalized.includes("doi.org") || normalized.includes("dl.acm.org") || normalized.includes("ieeexplore.ieee.org") || normalized.includes("springer.com") || normalized.includes("usenix.org")) provenance.add("publisher");
+  if (normalized.includes("openreview.net") || normalized.includes("thecvf.com") || normalized.includes("neurips.cc") || normalized.includes("icml.cc") || normalized.includes("iclr.cc")) provenance.add("venue_page");
 }
 
 function terms(value: string): string[] {
