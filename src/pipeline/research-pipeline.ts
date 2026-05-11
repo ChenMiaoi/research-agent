@@ -1,6 +1,16 @@
 import type { IdeaBrief, SearchPlan } from "../agents/schemas.js";
-import type { PaperRecord } from "../literature.js";
+import { paperCandidateToRecord, type PaperRecord } from "../literature.js";
 import { diagnoseIdea } from "../scoring.js";
+import { evidenceRowsCsv, evidenceRowsMarkdown, evidenceText, extractEvidenceRows } from "../skills/analysis/evidence-extract.js";
+import { strictCcfAScore, strictScoreMarkdown } from "../skills/analysis/ccf-a-score.js";
+import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from "../skills/analysis/idea-refine.js";
+import { assessNovelty, noveltyMatrixMarkdown } from "../skills/analysis/novelty-matrix.js";
+import { relatedWorkMatrixCsv, topicClustersMarkdown } from "../skills/analysis/related-work-matrix.js";
+import { searchLiteratureAsync } from "../literature.js";
+import type { LiteratureSource, PaperCandidate } from "../skills/literature/types.js";
+import { acquirePdfs } from "../skills/pdf/acquire.js";
+import { buildPdfChunkIndex } from "../skills/pdf/chunk.js";
+import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
 import { createResearchPipelineState, markStage, type ResearchPipelineState } from "./stage-state.js";
 import { researchStages } from "./stages.js";
 
@@ -15,6 +25,8 @@ export type ResearchPipelineOptions = {
   provider?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  sources?: string[];
+  outputRoot?: string;
   venue?: string;
   strictCcfA?: boolean;
   progress?: (message: string) => void;
@@ -60,10 +72,50 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     search_seed_terms: terms
   };
   const searchPlan = offlineSearchPlan(ideaBrief, options.maxPapers ?? 20);
-  const baselineRecommendations = ["Identify strongest recent baseline after candidate triage."];
-  const datasetRecommendations = ["Select public benchmark or owned dataset before scoring experimental soundness."];
-  const metricRecommendations = ["Define primary metric, secondary metrics, and failure-case criteria."];
-  const claimEvidenceRows = [
+  const queries = searchPlanQueries(searchPlan);
+  const literature = await searchLiteratureAsync({
+    queries,
+    allowNetwork: Boolean(options.allowNetwork),
+    limit: options.maxPapers ?? 20,
+    idea,
+    sources: options.sources as LiteratureSource[] | undefined
+  });
+  const candidates = literature.candidates;
+  const outputRoot = options.outputRoot ?? process.cwd();
+  const manifest = await acquirePdfs(candidates, {
+    outputRoot,
+    allowNetwork: Boolean(options.allowNetwork),
+    downloadPdfs: Boolean(options.downloadPdfs)
+  });
+  const chunks = await buildPdfChunkIndex(outputRoot, manifest);
+  const evidenceRows = extractEvidenceRows(chunks);
+  const noteArtifacts = evidenceRowsMarkdown(evidenceRows);
+  const novelty = assessNovelty(idea, candidates, evidenceRows);
+  const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
+  const evidence = evidenceText(evidenceRows);
+  const score = strictCcfAScore({
+    verifiedRelatedWorkCount: verifiedPaperCount,
+    pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
+    corePaperCount: verifiedPaperCount,
+    hasStrongBaseline: evidence.includes("baseline"),
+    hasDatasetOrBenchmark: evidence.includes("dataset") || evidence.includes("benchmark"),
+    hasMetric: evidence.includes("metric") || evidence.includes("accuracy") || evidence.includes("latency"),
+    highPriorWorkCollision: novelty.collision_risk === "high",
+    hasScientificHypothesis: /\bhypothesis\b|\bclaim\b/.test(evidence),
+    hasExecutableExperimentPlan: evidence.includes("experiment") && evidence.includes("baseline") && evidence.includes("metric"),
+    singlePersonTwelveWeekInfeasible: (options.resources ?? []).some((resource) => /single|solo|one/i.test(resource)) && (options.timelineWeeks ?? 12) <= 12,
+    venueRequiresThreatModel: /ccs|security|s&p|ndss/i.test(options.venue ?? ""),
+    hasThreatModel: evidence.includes("threat model"),
+    venueRequiresSystemEvaluation: /osdi|sosp|sigcomm|atc|systems/i.test(options.venue ?? ""),
+    hasPrototype: evidence.includes("prototype"),
+    venueExpectsStrongMlBaselines: /neurips|icml|iclr|acl/i.test(options.venue ?? ""),
+    hasStrongMlBaselines: evidence.includes("baseline")
+  });
+  const verifiedEvidence = evidenceText(evidenceRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id));
+  const baselineRecommendations = verifiedEvidence.includes("baseline") ? ["Verified PDF evidence mentions baseline comparison; inspect paper notes before selecting the final baseline."] : [];
+  const datasetRecommendations = verifiedEvidence.includes("dataset") || verifiedEvidence.includes("benchmark") ? ["Verified PDF evidence mentions dataset or benchmark usage; inspect paper notes before selecting data."] : [];
+  const metricRecommendations = verifiedEvidence.includes("metric") || verifiedEvidence.includes("accuracy") || verifiedEvidence.includes("latency") ? ["Verified PDF evidence mentions metrics; inspect paper notes before selecting primary and secondary metrics."] : [];
+  const claimEvidenceRows = evidenceRows.length ? evidenceRows : [
     {
       claim: "Main contribution improves over verified baselines.",
       required_evidence: "At least one result table linked to verified baseline, dataset, and metric.",
@@ -72,8 +124,17 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     }
   ];
   const artifacts = pipelineArtifacts({
+    idea,
     ideaBrief,
     searchPlan,
+    candidates,
+    manifest,
+    chunks,
+    evidenceRows,
+    noteArtifacts,
+    novelty,
+    score,
+    searchReport: literature.search_report,
     baselineRecommendations,
     datasetRecommendations,
     metricRecommendations,
@@ -84,13 +145,13 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     state,
     ideaBrief,
     searchPlan,
-    verifiedPapers: [],
+    verifiedPapers: verifiedPaperRecords(candidates, manifest, evidenceRows),
     baselineRecommendations,
     datasetRecommendations,
     metricRecommendations,
     claimEvidenceRows,
     artifacts,
-    warnings: options.allowNetwork ? [] : ["Network disabled; literature candidates require a later search stage."]
+    warnings: [...literature.warnings, ...(options.allowNetwork ? [] : ["Network disabled; literature candidates require a later search stage."])]
   };
 }
 
@@ -125,8 +186,17 @@ function offlineSearchPlan(brief: IdeaBrief, maxPapers: number): SearchPlan {
 }
 
 function pipelineArtifacts(input: {
+  idea: string;
   ideaBrief: IdeaBrief;
   searchPlan: SearchPlan;
+  candidates: PaperCandidate[];
+  manifest: PdfManifestRecord[];
+  chunks: Array<{ paper_id: string; chunk_id: string; page: number; text: string }>;
+  evidenceRows: ReturnType<typeof extractEvidenceRows>;
+  noteArtifacts: Record<string, string>;
+  novelty: ReturnType<typeof assessNovelty>;
+  score: ReturnType<typeof strictCcfAScore>;
+  searchReport: string;
   baselineRecommendations: string[];
   datasetRecommendations: string[];
   metricRecommendations: string[];
@@ -137,20 +207,26 @@ function pipelineArtifacts(input: {
     "docs/idea/idea_brief.md": `# Idea Brief\n\n${JSON.stringify(input.ideaBrief, null, 2)}\n`,
     "docs/idea/assumptions.md": `# Assumptions\n\n${input.ideaBrief.assumptions.map((item) => `- ${item}`).join("\n")}\n`,
     "docs/relative_work/search_plan.json": JSON.stringify(input.searchPlan, null, 2) + "\n",
-    "docs/relative_work/search_report.md": "# Search Report\n\nOffline search plan created. Run literature search with network enabled to collect candidates.\n",
-    "docs/relative_work/candidates.json": "[]\n",
-    "docs/relative_work/triage_report.md": "# Candidate Triage\n\nNo candidates have been triaged yet.\n",
-    "docs/reference/pdf_manifest.json": "[]\n",
+    "docs/relative_work/search_report.md": input.searchReport,
+    "docs/relative_work/candidates.json": JSON.stringify(input.candidates, null, 2) + "\n",
+    "docs/relative_work/triage_report.md": triageReport(input.candidates),
+    "docs/reference/pdf_manifest.json": JSON.stringify(input.manifest, null, 2) + "\n",
     "docs/reference/paper_notes/README.md": "# Paper Notes\n\nNo PDFs have been read yet. Every future note must cite page, quote, and chunk id.\n",
-    "docs/relative_work/related_work_matrix.csv": "paper_id,title,claim,evidence_ref,collision_risk\nTODO,Add verified papers before making claims,TODO,TODO,unknown\n",
-    "docs/relative_work/topic_clusters.md": "# Topic Clusters\n\nNo verified paper notes are available yet.\n",
-    "docs/relative_work/novelty_gap_matrix.md": "# Novelty Gap Matrix\n\nNovelty cannot be judged until verified related work is read.\n",
-    "docs/relative_work/collision_risk.md": "# Collision Risk\n\nUnknown until candidate triage and PDF reading complete.\n",
-    "docs/relative_work/baseline_recommendations.md": `# Baseline Recommendations\n\n${input.baselineRecommendations.map((item) => `- ${item}`).join("\n")}\n`,
-    "docs/diagnosis/feasibility_report.md": "# Feasibility Report\n\nFeasibility must model timeline, compute, data access, implementation risk, evaluation risk, and writing risk.\n",
-    "docs/proposal/experiment_plan.md": `# Experiment Plan\n\n- Datasets: ${input.datasetRecommendations.join("; ")}\n- Metrics: ${input.metricRecommendations.join("; ")}\n- Evidence rows: ${input.claimEvidenceRows.length}\n`,
-    "docs/proposal/revised_idea.md": "# Revised Idea\n\nA revised idea can only be finalized after related-work, novelty, strict score, and feasibility stages complete.\n",
-    "docs/diagnosis/ccf_a_strict_scorecard.md": `# CCF-A Strict Scorecard\n\nStrict mode: ${input.strict ? "enabled" : "disabled"}\n\nNo verified PDF evidence is present, so strict evidence caps must apply.\n`,
+    ...input.noteArtifacts,
+    "docs/relative_work/related_work_matrix.csv": relatedWorkMatrixCsv(input.candidates, input.manifest, input.evidenceRows),
+    "docs/reference/claim_evidence_matrix.csv": evidenceRowsCsv(input.evidenceRows),
+    "docs/relative_work/topic_clusters.md": topicClustersMarkdown(input.candidates),
+    "docs/relative_work/novelty_gap_matrix.md": noveltyMatrixMarkdown(input.novelty),
+    "docs/relative_work/collision_risk.md": `# Collision Risk\n\n${input.novelty.collision_risk}\n\n${input.novelty.reasons.map((reason) => `- ${reason}`).join("\n")}\n`,
+    "docs/relative_work/baseline_recommendations.md": `# Baseline Recommendations\n\n${input.baselineRecommendations.length ? input.baselineRecommendations.map((item) => `- ${item}`).join("\n") : "- Blocked until verified PDF evidence identifies reviewer-expected baselines."}\n`,
+    "docs/reference/pdf_chunks.json": JSON.stringify(input.chunks, null, 2) + "\n",
+    "docs/diagnosis/feasibility_report.md": feasibilityMarkdown(input.ideaBrief.resource_constraints, 12),
+    "docs/diagnosis/reviewer_panel.md": "# Reviewer Panel\n\nReviewer panel simulation requires verified evidence before final judgment.\n",
+    "docs/proposal/experiment_plan.md": `${experimentPlanMarkdown()}\n## Evidence Status\n\n- Baselines evidence-backed: ${input.baselineRecommendations.length ? "yes" : "no"}\n- Datasets evidence-backed: ${input.datasetRecommendations.length ? "yes" : "no"}\n- Metrics evidence-backed: ${input.metricRecommendations.length ? "yes" : "no"}\n`,
+    "docs/proposal/revised_idea.md": revisedIdeaMarkdown(input.idea, input.novelty, input.score),
+    "docs/proposal/first_4_week_plan.md": "# First 4 Week Plan\n\n1. Plan search and triage candidates.\n2. Acquire and read PDFs.\n3. Build evidence matrices.\n4. Lock experiments and paper story.\n",
+    "docs/proposal/paper_story.md": "# Paper Story\n\nPaper story is blocked until related work, novelty, and experiment evidence are verified.\n",
+    "docs/diagnosis/ccf_a_strict_scorecard.md": `${strictScoreMarkdown(input.score)}\nStrict mode: ${input.strict ? "enabled" : "disabled"}\n`,
     "docs/submission/target_venue.md": "# Target Venue\n\nTarget venue is unresolved until template selection runs.\n",
     "docs/submission/venue_template_profile.json": "{}\n",
     "docs/submission/template_decision.md": "# Template Decision\n\nNo venue template has been selected yet.\n",
@@ -177,6 +253,66 @@ function pipelineArtifacts(input: {
     "paper/build/compile.log": "Compile not run.\n",
     "paper/submission/overleaf.zip": ""
   };
+}
+
+function searchPlanQueries(searchPlan: SearchPlan): string[] {
+  return [
+    ...searchPlan.precision_queries,
+    ...searchPlan.recall_queries,
+    ...searchPlan.baseline_queries,
+    ...searchPlan.dataset_metric_queries,
+    ...searchPlan.venue_queries,
+    ...searchPlan.collision_queries
+  ].map((entry) => entry.query);
+}
+
+function verifiedEvidencePaperCount(rows: ReturnType<typeof extractEvidenceRows>): number {
+  return new Set(rows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id).map((row) => row.paper_id)).size;
+}
+
+function verifiedPaperRecords(candidates: PaperCandidate[], manifest: PdfManifestRecord[], rows: ReturnType<typeof extractEvidenceRows>): PaperRecord[] {
+  const manifestByPaper = new Map(manifest.map((record) => [record.paper_id, record]));
+  const rowsByPaper = new Map<string, ReturnType<typeof extractEvidenceRows>>();
+  for (const row of rows.filter((candidate) => candidate.status === "verified" && candidate.page && candidate.quote && candidate.chunk_id)) {
+    rowsByPaper.set(row.paper_id, [...(rowsByPaper.get(row.paper_id) ?? []), row]);
+  }
+  const verified: PaperRecord[] = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const paperId = safePaperId(candidate.candidate_id);
+    const record = manifestByPaper.get(paperId);
+    const evidence = rowsByPaper.get(paperId);
+    if (record?.status !== "downloaded" || !record.pdf_path || !record.pdf_sha256 || !evidence?.length) continue;
+    verified.push({
+      ...paperCandidateToRecord(candidate, index),
+      paper_id: paperId,
+      pdf_path: record.pdf_path,
+      pdf_sha256: record.pdf_sha256,
+      pdf_status: record.status,
+      evidence_refs: evidence.map((row) => ({
+        page: Number(row.page),
+        quote: row.quote!,
+        chunk_id: row.chunk_id!,
+        purpose: row.claim
+      })),
+      analysis_confidence: "medium"
+    });
+  }
+  return verified;
+}
+
+function triageReport(candidates: PaperCandidate[]): string {
+  return `# Candidate Triage
+
+- Candidates: ${candidates.length}
+- Must-read direct prior work target: ${Math.min(8, candidates.length)}
+- Expanded paper target: ${Math.min(30, Math.max(15, candidates.length))}
+
+${candidates.slice(0, 20).map((candidate, index) => `- ${index + 1}. ${candidate.title} (${candidate.year ?? "n.d."}) — ${candidate.confidence}`).join("\n") || "- No candidates collected yet."}
+`;
+}
+
+function safePaperId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "paper";
 }
 
 function seedTerms(idea: string): string[] {

@@ -7,6 +7,7 @@ import { licenseHint, sha256, titleMatchScore, type PdfManifestRecord } from "./
 
 export type PdfAcquireOptions = {
   outputRoot: string;
+  allowNetwork?: boolean;
   downloadPdfs?: boolean;
   fetchImpl?: typeof fetch;
   now?: () => string;
@@ -24,6 +25,9 @@ export async function acquirePdf(candidate: PaperCandidate, options: PdfAcquireO
   }
   if (!options.downloadPdfs) {
     return { paper_id: paperId, source_url: sourceUrl, license_hint: hint, status: "not_available", reason: "PDF download disabled" };
+  }
+  if (!options.allowNetwork) {
+    return { paper_id: paperId, source_url: sourceUrl, license_hint: hint, status: "not_available", reason: "PDF download requires allowNetwork permission" };
   }
   try {
     const fetchImpl = options.fetchImpl ?? fetch;

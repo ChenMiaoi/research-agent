@@ -21,6 +21,14 @@ import type { ProjectManifest, ResearchAnalysis } from "./types.js";
 import { inspectWorkspace } from "./workspace.js";
 import { runWorkflow, workflowSummary } from "./workflow.js";
 import { CodexOAuthClient } from "./auth/codex-oauth.js";
+import { runResearchPipeline, type ResearchPipelineResult } from "./pipeline/research-pipeline.js";
+import { writeResearchPipelineState } from "./pipeline/stage-state.js";
+import { resolveTemplateProfile, templateDecisionMarkdown } from "./skills/templates/resolve.js";
+import { renderPaper } from "./skills/templates/render.js";
+import { anonymityMarkdown, checkTemplateCompliance, complianceMarkdown } from "./skills/templates/compliance.js";
+import { compilePaper as compileRenderedPaper } from "./skills/templates/compile.js";
+import { packagePaper } from "./skills/templates/package.js";
+import type { ReviewMode, TemplateResolveInput, VenueTemplateProfile } from "./skills/templates/types.js";
 
 export type Stack = "python" | "ts";
 
@@ -45,6 +53,19 @@ export type GenerateOptions = {
   derivedConfig?: Record<string, unknown>;
   discussionAssumptions?: string[];
   progressCallback?: (message: string) => void;
+  runResearchPipeline?: boolean;
+  allowNetwork?: boolean;
+  downloadPdfs?: boolean;
+  maxPapers?: number;
+  sources?: string[];
+  strictCcfA?: boolean;
+  venue?: string;
+  template?: string;
+  reviewMode?: "anonymous" | "camera-ready" | "non-anonymous";
+  paperType?: "full" | "short" | "demo" | "dataset" | "system" | "benchmark";
+  templateYear?: number;
+  compilePaper?: boolean;
+  packageOverleaf?: boolean;
 };
 
 export type GeneratedProject = {
@@ -61,6 +82,8 @@ export type GeneratedProject = {
   codex_logged_in: boolean;
   fallback_reason: string;
   research_analysis: ResearchAnalysis | null;
+  research_pipeline: ResearchPipelineResult | null;
+  template_profile_id: string | null;
 };
 
 type ProviderAnalysis = {
@@ -84,8 +107,28 @@ export async function generateResearchRepo(idea: string, output: string, options
   }
   if ((await exists(root)) && (await nonEmpty(root))) requirePermission(policy, "overwrite", root);
   requirePermission(policy, "write", root);
+  if ((options.allowNetwork || options.downloadPdfs) && !policy.allowNetwork) requirePermission(policy, "network", "research pipeline network access");
 
   const createdAt = options.createdAt ?? today();
+  const pipeline = options.runResearchPipeline
+    ? await runResearchPipeline(idea, {
+        allowNetwork: Boolean(options.allowNetwork && policy.allowNetwork),
+        downloadPdfs: options.downloadPdfs,
+        maxPapers: options.maxPapers ?? 20,
+        requestedDomains: options.requestedDomains,
+        timelineWeeks,
+        resources: options.resources ?? [],
+        stack,
+        provider: options.provider ?? (options.offline ? "offline" : null),
+        model: options.model,
+        reasoningEffort: options.reasoningEffort,
+        sources: options.sources,
+        outputRoot: root,
+        venue: options.venue,
+        strictCcfA: options.strictCcfA,
+        progress: options.progressCallback
+      })
+    : null;
   const providerAnalysis = await analyzeWithProvider(idea, {
     ...options,
     timelineWeeks,
@@ -93,20 +136,25 @@ export async function generateResearchRepo(idea: string, output: string, options
     stack
   });
   const analysis = providerAnalysis.analysis;
-  const literatureTasks = options.literatureTasks ?? analysis?.related_work_queries ?? [];
-  const claimEvidenceRows = options.claimEvidenceRows ?? (analysis ? analysisClaimEvidenceRows(analysis) : undefined);
-  const evidenceGate = evaluateEvidenceGate(options.verifiedPapers ?? [], {
-    baselines: options.baselines,
-    datasets: options.datasets,
-    metrics: options.metrics,
+  const pipelineQueries = pipeline ? searchPlanQueries(pipeline) : undefined;
+  const literatureTasks = options.literatureTasks ?? pipelineQueries ?? analysis?.related_work_queries ?? [];
+  const verifiedPapers = options.verifiedPapers ?? pipeline?.verifiedPapers ?? [];
+  const baselines = options.baselines ?? pipeline?.baselineRecommendations;
+  const datasets = options.datasets ?? pipeline?.datasetRecommendations;
+  const metrics = options.metrics ?? pipeline?.metricRecommendations;
+  const claimEvidenceRows = options.claimEvidenceRows ?? pipeline?.claimEvidenceRows ?? (analysis ? analysisClaimEvidenceRows(analysis) : undefined);
+  const evidenceGate = evaluateEvidenceGate(verifiedPapers, {
+    baselines,
+    datasets,
+    metrics,
     claimEvidenceRows
   });
   let diagnosis = diagnoseIdea(idea, {
     requestedDomains: options.requestedDomains,
-    verifiedPapers: options.verifiedPapers,
-    baselines: options.baselines,
-    datasets: options.datasets,
-    metrics: options.metrics,
+    verifiedPapers,
+    baselines,
+    datasets,
+    metrics,
     claimEvidenceRows
   });
   if (analysis) diagnosis = diagnosisFromAnalysis(diagnosis, analysis);
@@ -130,7 +178,7 @@ export async function generateResearchRepo(idea: string, output: string, options
     timelineWeeks,
     resources: options.resources ?? [],
     workspace,
-    verifiedPapers: options.verifiedPapers ?? [],
+    verifiedPapers,
     literatureTasks,
     claimEvidenceRows,
     evidenceGate,
@@ -140,6 +188,14 @@ export async function generateResearchRepo(idea: string, output: string, options
     providerId: providerAnalysis.selectedProvider,
     apiShape: providerAnalysis.selectedApiShape
   });
+  if (pipeline) Object.assign(fileMap, pipeline.artifacts);
+  const templateArtifacts = await buildGeneratedTemplateArtifacts({
+    projectName,
+    diagnosis,
+    verifiedPapers,
+    options
+  });
+  if (templateArtifacts) Object.assign(fileMap, templateArtifacts.files);
 
   const written: string[] = [];
   options.progressCallback?.("Artifacts: writing repository scaffold");
@@ -147,6 +203,35 @@ export async function generateResearchRepo(idea: string, output: string, options
     const path = ensureChild(root, relativePath);
     await writeText(path, ensureTrailingNewline(content));
     written.push(path);
+  }
+  if (pipeline) {
+    await writeResearchPipelineState(root, pipeline.state);
+    written.push(join(root, ".idea2repo", "research_pipeline_state.json"));
+  }
+  if (templateArtifacts) {
+    const compliance = await checkTemplateCompliance(root, {
+      profile: templateArtifacts.profile,
+      anonymous: templateArtifacts.reviewMode === "anonymous",
+      strict: options.strictCcfA
+    });
+    const compliancePath = ensureChild(root, "docs/submission/template_compliance_report.md");
+    await writeText(compliancePath, complianceMarkdown(compliance));
+    written.push(compliancePath);
+    const anonymityPath = ensureChild(root, "docs/submission/anonymity_check.md");
+    await writeText(anonymityPath, anonymityMarkdown(compliance));
+    written.push(anonymityPath);
+    if (options.compilePaper) {
+      const compile = await compileRenderedPaper(root, templateArtifacts.profile);
+      const compilePath = ensureChild(root, "docs/submission/compile_result.json");
+      await writeText(compilePath, JSON.stringify(compile, null, 2) + "\n");
+      written.push(compilePath, ensureChild(root, compile.log_path));
+    }
+    if (options.runResearchPipeline || options.packageOverleaf) {
+      const packaged = await packagePaper(root, { forOverleaf: true });
+      const packagePath = ensureChild(root, "docs/submission/submission_package.json");
+      await writeText(packagePath, JSON.stringify(packaged, null, 2) + "\n");
+      written.push(packagePath, ...packaged.files.map((file) => ensureChild(root, file.path)));
+    }
   }
   for (const directory of emptyDirectories()) {
     const keepFile = ensureChild(root, join(directory, ".gitkeep"));
@@ -162,7 +247,7 @@ export async function generateResearchRepo(idea: string, output: string, options
     resources: options.resources ?? [],
     stack,
     createdAt,
-    files: written,
+      files: [...new Set(written)],
     permissions: policyAsDict(policy),
     workspace,
     generation: generationMetadata({
@@ -174,7 +259,9 @@ export async function generateResearchRepo(idea: string, output: string, options
       model: options.model ?? null,
       reasoningEffort: options.reasoningEffort ?? null,
       derivedConfig: options.derivedConfig,
-      discussionAssumptions: options.discussionAssumptions
+      discussionAssumptions: options.discussionAssumptions,
+      pipeline,
+      templateProfileId: templateArtifacts?.profile.profile_id ?? null
     })
   });
   written.push(manifestPath, join(root, RUN_LOG_PATH));
@@ -193,7 +280,9 @@ export async function generateResearchRepo(idea: string, output: string, options
     codex_available: Boolean(analysis),
     codex_logged_in: Boolean(analysis),
     fallback_reason: providerAnalysis.fallbackReason,
-    research_analysis: analysis
+    research_analysis: analysis,
+    research_pipeline: pipeline,
+    template_profile_id: templateArtifacts?.profile.profile_id ?? null
   };
 }
 
@@ -288,6 +377,115 @@ function analysisClaimEvidenceRows(analysis: ResearchAnalysis): Record<string, s
   }));
 }
 
+type GeneratedTemplateArtifacts = {
+  files: Record<string, string>;
+  profile: VenueTemplateProfile;
+  reviewMode: ReviewMode;
+};
+
+async function buildGeneratedTemplateArtifacts(options: {
+  projectName: string;
+  diagnosis: Diagnosis;
+  verifiedPapers: PaperRecord[];
+  options: GenerateOptions;
+}): Promise<GeneratedTemplateArtifacts | null> {
+  if (!(options.options.runResearchPipeline || options.options.venue || options.options.template || options.options.compilePaper || options.options.packageOverleaf)) return null;
+  const route = options.diagnosis.routes[0]!;
+  const input: TemplateResolveInput = {
+    venue: options.options.venue ?? route.domain.primary_venues[0],
+    domain: route.domain.key,
+    family: options.options.template,
+    year: options.options.templateYear,
+    mode: normalizeTemplateResolveMode(options.options.reviewMode),
+    paperType: options.options.paperType
+  };
+  const resolved = await resolveTemplateProfile(input);
+  const reviewMode = normalizeReviewMode(options.options.reviewMode, resolved.profile.default_review_mode);
+  const rendered = renderPaper({
+    profile: resolved.profile,
+    projectName: options.projectName,
+    title: titleFromProjectName(options.projectName),
+    anonymous: reviewMode === "anonymous",
+    reviewMode,
+    bibFile: "references.bib",
+    macrosFile: "macros.tex"
+  });
+  rendered.files["paper/references.bib"] = referencesBib(options.verifiedPapers);
+  return {
+    profile: resolved.profile,
+    reviewMode,
+    files: {
+      ...rendered.files,
+      "docs/submission/target_venue.md": `# Target Venue\n\n${input.venue ?? resolved.profile.venue_name}\n`,
+      "docs/submission/venue_template_profile.json": JSON.stringify(resolved.profile, null, 2) + "\n",
+      "docs/submission/template_decision.md": templateDecisionMarkdown(resolved, input),
+      "docs/submission/submission_checklist.md": generatedSubmissionChecklist(resolved.profile, resolved.verificationTasks, rendered.warnings),
+      "docs/submission/camera_ready_todo.md": generatedCameraReadyTodo(resolved.profile),
+      "docs/submission/template_compliance_report.md": "# Template Compliance Report\n\nStatic checks will run after render.\n",
+      "docs/submission/anonymity_check.md": "# Anonymity Check\n\nStatic checks will run after render.\n"
+    }
+  };
+}
+
+function searchPlanQueries(pipeline: ResearchPipelineResult): string[] {
+  return [
+    ...pipeline.searchPlan.precision_queries,
+    ...pipeline.searchPlan.recall_queries,
+    ...pipeline.searchPlan.baseline_queries,
+    ...pipeline.searchPlan.dataset_metric_queries,
+    ...pipeline.searchPlan.venue_queries,
+    ...pipeline.searchPlan.collision_queries
+  ].map((entry) => entry.query);
+}
+
+function normalizeTemplateResolveMode(mode: GenerateOptions["reviewMode"]): TemplateResolveInput["mode"] {
+  return mode === "camera-ready" ? "camera_ready" : "review";
+}
+
+function normalizeReviewMode(mode: GenerateOptions["reviewMode"] | undefined, fallback: ReviewMode): ReviewMode {
+  if (!mode) return fallback;
+  if (mode === "camera-ready") return "camera_ready";
+  if (mode === "non-anonymous") return "non_anonymous";
+  return "anonymous";
+}
+
+function generatedSubmissionChecklist(profile: VenueTemplateProfile, verificationTasks: string[], warnings: string[]): string {
+  return `# Submission Checklist
+
+- [x] Template profile selected: ${profile.profile_id}
+- [ ] Official CFP and style files verified for target year
+- [ ] Anonymous mode checked
+- [ ] Compliance check passed
+- [ ] Page limits, checklist, appendix, and supplement rules confirmed
+
+## Verification Tasks
+
+${verificationTasks.length ? verificationTasks.map((task) => `- ${task}`).join("\n") : "- None"}
+
+## Render Warnings
+
+${warnings.length ? warnings.map((warning) => `- ${warning}`).join("\n") : "- None"}
+`;
+}
+
+function generatedCameraReadyTodo(profile: VenueTemplateProfile): string {
+  return `# Camera Ready TODO
+
+- Re-enable author and affiliation blocks only after acceptance.
+- Replace anonymous links with final artifact URLs when venue policy allows.
+- Confirm ${profile.venue_name} camera-ready page limits and rights blocks.
+- Re-run paper check and package commands before upload.
+`;
+}
+
+function titleFromProjectName(projectName: string): string {
+  return projectName
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Evidence-First Research Draft";
+}
+
 async function regenerateFromManifest(root: string, manifest: ProjectManifest, force: boolean, policy: PermissionPolicy): Promise<GeneratedProject> {
   const request = manifest.request;
   const diagnosis = diagnoseIdea(request.idea, { requestedDomains: request.requested_domains });
@@ -334,7 +532,7 @@ async function regenerateFromManifest(root: string, manifest: ProjectManifest, f
       resources: request.resources,
       stack: request.stack,
       createdAt: manifest.created_at || today(),
-      files: written,
+      files: [...new Set(written)],
       permissions: policyAsDict(policy),
       workspace: manifest.workspace,
       generation: {
@@ -360,7 +558,9 @@ async function regenerateFromManifest(root: string, manifest: ProjectManifest, f
     codex_available: false,
     codex_logged_in: false,
     fallback_reason: "resume uses manifest deterministic fallback",
-    research_analysis: null
+    research_analysis: null,
+    research_pipeline: null,
+    template_profile_id: null
   };
 }
 
@@ -400,6 +600,7 @@ function buildFiles(options: {
     "docs/diagnosis/evidence_gate.md": evidenceGateMarkdown(options.evidenceGate),
     "docs/diagnosis/security_guardrail.md": securityGuardrailMarkdown(options.diagnosis.security_assessment),
     "docs/diagnosis/risk_register.md": riskRegister(options.diagnosis),
+    "docs/diagnosis/reviewer_panel.md": reviewerPanel(options.diagnosis, options.analysis),
     "docs/diagnosis/reviewer_simulation.md": options.analysis?.reviewer_simulation
       ? `# Reviewer Simulation\n\n${options.analysis.reviewer_simulation}\n`
       : reviewerSimulation(options.diagnosis),
@@ -421,6 +622,8 @@ function buildFiles(options: {
     "docs/execution_plan/experiment_checklist.md": experimentChecklist(route.domain.key),
     "docs/meeting/weekly_update_template.md": weeklyUpdateTemplate(),
     "docs/meeting/advisor_report.md": advisorReport(options.diagnosis),
+    "docs/proposal/first_4_week_plan.md": firstFourWeekPlan(options.diagnosis),
+    "docs/proposal/paper_story.md": paperStory(options.diagnosis),
     "docs/runtime/platform_notes.md": platformNotes(),
     "docs/runtime/provider_config.md": options.providerReport,
     "docs/runtime/provider_schema.json": providerSchemaJson(),
@@ -486,6 +689,8 @@ function generationMetadata(options: {
   reasoningEffort: string | null;
   derivedConfig?: Record<string, unknown>;
   discussionAssumptions?: string[];
+  pipeline?: ResearchPipelineResult | null;
+  templateProfileId?: string | null;
 }): Record<string, unknown> {
   return {
     runtime: "node",
@@ -500,6 +705,14 @@ function generationMetadata(options: {
         : null,
     derived_config: options.derivedConfig ?? {},
     discussion_assumptions: options.discussionAssumptions ?? [],
+    research_pipeline: options.pipeline
+      ? {
+          stage_count: options.pipeline.state.stages.length,
+          completed_stages: options.pipeline.state.stages.filter((stage) => stage.status === "completed").length,
+          warnings: options.pipeline.warnings
+        }
+      : null,
+    template_profile_id: options.templateProfileId ?? null,
     fallback_reason: options.fallbackReason
   };
 }
@@ -815,6 +1028,23 @@ ${markdownList(diagnosis.required_evidence)}
 `;
 }
 
+function reviewerPanel(diagnosis: Diagnosis, analysis: ResearchAnalysis | null): string {
+  return `# Reviewer Panel
+
+## Reviewer A: Novelty
+
+${analysis?.novelty_gaps?.length ? markdownList(analysis.novelty_gaps) : "- Requires verified related-work matrix and novelty gap evidence."}
+
+## Reviewer B: Soundness
+
+${markdownList(diagnosis.required_evidence)}
+
+## Reviewer C: Feasibility
+
+- ${analysis?.feasibility ?? diagnosis.revised_plan_text}
+`;
+}
+
 function survey(diagnosis: Diagnosis, analysis: ResearchAnalysis | null): string {
   const route = diagnosis.routes[0]!;
   return `# Survey
@@ -902,6 +1132,49 @@ ${phases.map((phase, index) => `## Phase ${index + 1}\n\n- Deliverable: ${phase}
 ## Required Evidence
 
 ${markdownList(diagnosis.required_evidence)}
+`;
+}
+
+function firstFourWeekPlan(diagnosis: Diagnosis): string {
+  return `# First 4 Week Plan
+
+## Week 1
+
+- Complete literature search plan, candidate triage, and PDF provenance manifest.
+
+## Week 2
+
+- Read core PDFs and write paper notes with page, quote, and chunk id evidence refs.
+
+## Week 3
+
+- Build related-work and novelty matrices; lock reviewer-expected baselines.
+
+## Week 4
+
+- Finalize dataset, metric, ablation, and failure-case plan.
+
+## Gate
+
+${markdownList(diagnosis.required_evidence)}
+`;
+}
+
+function paperStory(diagnosis: Diagnosis): string {
+  const route = diagnosis.routes[0]!;
+  return `# Paper Story
+
+## Target Reader
+
+${route.domain.label} reviewer expecting CCF-A-level novelty, evidence, and feasibility.
+
+## Story Arc
+
+1. Establish the problem and why existing work is insufficient.
+2. Use verified related work to identify the defensible gap.
+3. State the hypothesis and method.
+4. Present baseline, dataset, metric, ablation, and failure-case evidence.
+5. Discuss limitations before making claims broader than the evidence.
 `;
 }
 

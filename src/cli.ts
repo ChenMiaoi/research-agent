@@ -62,8 +62,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const rest = command === "generate" && !commandNames.has(argv[0] ?? "") ? argv : argv.slice(1);
     switch (command) {
       case "generate":
+        return await commandGenerate(rest, false);
       case "research":
-        return await commandGenerate(rest);
+        return await commandGenerate(rest, true);
       case "literature":
         return await commandLiterature(rest);
       case "papers":
@@ -297,7 +298,7 @@ async function commandPaper(argv: string[]): Promise<number> {
   throw new Error(`unknown paper action: ${action}`);
 }
 
-async function commandGenerate(argv: string[]): Promise<number> {
+async function commandGenerate(argv: string[], researchMode = false): Promise<number> {
   const parsed = parseArgs(argv);
   const idea = parsed._.join(" ").trim();
   if (!idea) throw new Error("idea must not be empty");
@@ -314,6 +315,19 @@ async function commandGenerate(argv: string[]): Promise<number> {
     provider,
     model: stringFlag(parsed, "model"),
     reasoningEffort: stringFlag(parsed, "reasoning"),
+    runResearchPipeline: researchMode || hasFlag(parsed, "run-research-pipeline"),
+    allowNetwork: hasFlag(parsed, "allow-network"),
+    downloadPdfs: hasFlag(parsed, "download-pdfs"),
+    maxPapers: numberFlag(parsed, "max-papers", 20),
+    sources: valuesFlag(parsed, "source"),
+    strictCcfA: hasFlag(parsed, "strict-ccf-a"),
+    venue: stringFlag(parsed, "venue") ?? undefined,
+    template: stringFlag(parsed, "template") ?? undefined,
+    reviewMode: generateReviewModeFlag(stringFlag(parsed, "review-mode") ?? stringFlag(parsed, "mode")),
+    paperType: generatePaperTypeFlag(stringFlag(parsed, "paper-type")),
+    templateYear: optionalNumberFlag(parsed, "template-year") ?? optionalNumberFlag(parsed, "year"),
+    compilePaper: hasFlag(parsed, "compile-paper"),
+    packageOverleaf: hasFlag(parsed, "package-overleaf"),
     permissionPolicy: policyFromFlags(parsed)
   });
   const diagnosis = result.diagnosis;
@@ -323,6 +337,8 @@ async function commandGenerate(argv: string[]): Promise<number> {
   console.log(`Revised Plan Score: ${diagnosis.revised_score.total} / 100`);
   console.log(`Provider: ${result.provider_id}`);
   console.log(`Analysis source: ${result.analysis_source}`);
+  if (result.research_pipeline) console.log(`Research pipeline stages: ${result.research_pipeline.state.stages.length}`);
+  if (result.template_profile_id) console.log(`Template profile: ${result.template_profile_id}`);
   if (result.fallback_reason) console.log(`Fallback reason: ${result.fallback_reason}`);
   console.log("Main report: docs/diagnosis/ccf_a_readiness_report.md");
   console.log(`Execution plan: docs/execution_plan/${weeks}_week_plan.md`);
@@ -371,6 +387,7 @@ async function commandLiterature(argv: string[]): Promise<number> {
     const candidates = JSON.parse(await readFile(candidatesPath, "utf8")) as never[];
     const manifest = await acquirePdfs(candidates, {
       outputRoot: root,
+      allowNetwork: hasFlag(parsed, "allow-network"),
       downloadPdfs: hasFlag(parsed, "download-pdfs")
     });
     await writeText(ensureChild(root, "docs/reference/pdf_manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
@@ -614,6 +631,20 @@ function optionalNumberFlag(parsed: ParsedArgs, name: string): number | undefine
   return Number.isFinite(value) ? value : undefined;
 }
 
+function generateReviewModeFlag(value: string | null): GenerateOptions["reviewMode"] {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase().replace("_", "-");
+  if (normalized === "camera-ready" || normalized === "camera") return "camera-ready";
+  if (normalized === "non-anonymous" || normalized === "nonanonymous") return "non-anonymous";
+  if (normalized === "review" || normalized === "anonymous") return "anonymous";
+  return undefined;
+}
+
+function generatePaperTypeFlag(value: string | null): GenerateOptions["paperType"] {
+  if (value === "full" || value === "short" || value === "demo" || value === "dataset" || value === "system" || value === "benchmark") return value;
+  return undefined;
+}
+
 function normalizeTemplateMode(mode: string | null): "review" | "camera_ready" | undefined {
   if (!mode) return undefined;
   const normalized = mode.toLowerCase().replace("-", "_");
@@ -789,6 +820,12 @@ Options:
   --query value        Literature query; repeatable
   --source value       Literature source; repeatable
   --download-pdfs      Download public PDF URLs during literature download
+  --run-research-pipeline
+                       Use evidence-first pipeline during generate
+  --venue value        Target venue for template packaging
+  --review-mode value  anonymous, non-anonymous, or camera-ready
+  --compile-paper      Try latexmk/tectonic after rendering paper
+  --package-overleaf   Create paper/submission/overleaf.zip
 `);
 }
 

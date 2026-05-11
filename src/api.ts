@@ -85,7 +85,28 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       offline: Boolean(body.offline),
       provider: stringOrNull(body.provider),
       model: stringOrNull(body.model),
-      reasoningEffort: stringOrNull(body.reasoning_effort)
+      reasoningEffort: stringOrNull(body.reasoning_effort),
+      runResearchPipeline: Boolean(body.run_research_pipeline),
+      allowNetwork: Boolean(body.allow_network),
+      downloadPdfs: Boolean(body.download_pdfs),
+      maxPapers: numberValue(body.max_papers, 20),
+      sources: stringArray(body.sources),
+      strictCcfA: Boolean(body.strict_ccf_a),
+      venue: stringOrNull(body.venue) ?? undefined,
+      template: stringOrNull(body.template) ?? undefined,
+      reviewMode: reviewModeValue(body.review_mode),
+      paperType: paperTypeValue(body.paper_type),
+      templateYear: optionalNumberValue(body.template_year),
+      compilePaper: Boolean(body.compile_paper),
+      packageOverleaf: Boolean(body.package_overleaf),
+      permissionPolicy: {
+        allowWrite: true,
+        allowOverwrite: Boolean(body.force),
+        allowNetwork: Boolean(body.allow_network),
+        allowLogin: false,
+        allowInstall: false,
+        allowPublish: false
+      }
     });
     sendJson(response, 200, {
       root: result.root,
@@ -99,7 +120,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       codex_available: result.codex_available,
       codex_logged_in: result.codex_logged_in,
       codex_model: result.model,
-      fallback_reason: result.fallback_reason
+      fallback_reason: result.fallback_reason,
+      research_pipeline_stages: result.research_pipeline?.state.stages.length,
+      template_profile_id: result.template_profile_id
     });
     return;
   }
@@ -323,6 +346,18 @@ function stringArray(value: unknown): string[] {
 
 function numberValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function optionalNumberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function reviewModeValue(value: unknown): "anonymous" | "camera-ready" | "non-anonymous" | undefined {
+  return value === "anonymous" || value === "camera-ready" || value === "non-anonymous" ? value : undefined;
+}
+
+function paperTypeValue(value: unknown): "full" | "short" | "demo" | "dataset" | "system" | "benchmark" | undefined {
+  return value === "full" || value === "short" || value === "demo" || value === "dataset" || value === "system" || value === "benchmark" ? value : undefined;
 }
 
 function toPosix(value: string): string {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -60,6 +60,47 @@ test("resume restores missing generated artifacts without overwriting existing f
     assert.ok(resumed.files.some((file) => file.endsWith("docs/diagnosis/risk_register.md")));
     current = await status(root);
     assert.equal(current.missing_artifacts.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research generation wires pipeline artifacts and venue-aware paper package", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-generate-pipeline-"));
+  const output = join(root, "project");
+  try {
+    const result = await generateResearchRepo(
+      "Build an evidence-first LLM agent benchmark with baselines, datasets, metrics, ablations, and failure cases.",
+      output,
+      {
+        offline: true,
+        provider: "offline",
+        stack: "ts",
+        requestedDomains: ["AI/LLM Agent"],
+        runResearchPipeline: true,
+        strictCcfA: true,
+        venue: "ACM CCS",
+        reviewMode: "anonymous",
+        packageOverleaf: true,
+        timelineWeeks: 12
+      }
+    );
+    assert.equal(result.research_pipeline?.state.stages.length, 13);
+    assert.equal(result.research_pipeline?.verifiedPapers.length, 0);
+    assert.deepEqual(result.research_pipeline?.baselineRecommendations, []);
+    assert.deepEqual(result.research_pipeline?.datasetRecommendations, []);
+    assert.deepEqual(result.research_pipeline?.metricRecommendations, []);
+    assert.equal(result.template_profile_id, "acm-sigconf");
+    assert.equal((await validate(output)).length, 0);
+    assert.equal((await stat(join(output, ".idea2repo/research_pipeline_state.json"))).isFile(), true);
+    assert.match(await readFile(join(output, "docs/idea/idea_brief.md"), "utf8"), /Idea Brief/);
+    assert.match(await readFile(join(output, "docs/relative_work/search_plan.json"), "utf8"), /precision_queries/);
+    assert.match(await readFile(join(output, "docs/diagnosis/ccf_a_strict_scorecard.md"), "utf8"), /Strict mode: enabled/);
+    assert.match(await readFile(join(output, "docs/proposal/paper_story.md"), "utf8"), /Paper Story/);
+    assert.match(await readFile(join(output, "docs/submission/venue_template_profile.json"), "utf8"), /acm-sigconf/);
+    assert.match(await readFile(join(output, "paper/main.tex"), "utf8"), /\\documentclass\[sigconf,review,anonymous\]\{acmart\}/);
+    const overleaf = await readFile(join(output, "paper/submission/overleaf.zip"));
+    assert.equal(overleaf.subarray(0, 2).toString("utf8"), "PK");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -10,6 +10,19 @@ export type GenerateRequest = {
   provider?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
+  run_research_pipeline?: boolean;
+  allow_network?: boolean;
+  download_pdfs?: boolean;
+  max_papers?: number;
+  sources?: string[];
+  strict_ccf_a?: boolean;
+  venue?: string;
+  template?: string;
+  review_mode?: "anonymous" | "camera-ready" | "non-anonymous";
+  paper_type?: "full" | "short" | "demo" | "dataset" | "system" | "benchmark";
+  template_year?: number;
+  compile_paper?: boolean;
+  package_overleaf?: boolean;
 };
 
 export type GenerateResponse = {
@@ -25,6 +38,8 @@ export type GenerateResponse = {
   codex_logged_in: boolean;
   codex_model: string | null;
   fallback_reason: string;
+  research_pipeline_stages?: number;
+  template_profile_id?: string | null;
 };
 
 export type PathRequest = {

@@ -16,6 +16,7 @@ test("PDF acquisition records sha256 bytes status and provenance", async () => {
   try {
     const record = await acquirePdf(candidate({ pdf_urls: ["https://arxiv.org/pdf/1234.5678"] }), {
       outputRoot: root,
+      allowNetwork: true,
       downloadPdfs: true,
       fetchImpl: async () => new Response(tinyPdf, { status: 200, headers: { "content-type": "application/pdf" } }),
       now: () => "2026-05-11T00:00:00Z"
@@ -42,6 +43,7 @@ test("PDF acquisition records graceful unavailable and failed entries", async ()
       ],
       {
         outputRoot: root,
+        allowNetwork: true,
         downloadPdfs: true,
         fetchImpl: async () => new Response("not pdf", { status: 200 })
       }
@@ -50,6 +52,23 @@ test("PDF acquisition records graceful unavailable and failed entries", async ()
     assert.equal(records[1]?.status, "failed");
     assert.match(records[1]?.reason ?? "", /not a PDF/);
     assert.equal(records[2]?.status, "skipped_license");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("PDF download requires explicit network permission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pdf-permission-"));
+  try {
+    const record = await acquirePdf(candidate({ pdf_urls: ["https://arxiv.org/pdf/1234.5678"] }), {
+      outputRoot: root,
+      downloadPdfs: true,
+      fetchImpl: async () => {
+        throw new Error("fetch should not run without allowNetwork");
+      }
+    });
+    assert.equal(record.status, "not_available");
+    assert.match(record.reason ?? "", /allowNetwork/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
