@@ -37,10 +37,15 @@ test("built CLI and npm pack dry-run are usable", async () => {
     await rm(root, { recursive: true, force: true });
   }
 
-  const packed = await execFileAsync("npm", ["pack", "--dry-run", "--json"], { cwd });
+  const packed = await execNpm(["pack", "--dry-run", "--json"]);
   const entries = JSON.parse(packed.stdout) as Array<{ files: Array<{ path: string }> }>;
   const paths = new Set(entries[0]?.files.map((file) => file.path) ?? []);
   assert.equal(paths.has("package.json"), true);
   assert.equal(paths.has("dist/cli.js"), true);
   assert.equal(paths.has("data/venues.json"), true);
 });
+
+async function execNpm(args: string[]) {
+  if (process.env.npm_execpath) return execFileAsync(process.execPath, [process.env.npm_execpath, ...args], { cwd });
+  return execFileAsync(process.platform === "win32" ? "npm.cmd" : "npm", args, { cwd, shell: process.platform === "win32" });
+}
