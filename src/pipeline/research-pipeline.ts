@@ -48,7 +48,7 @@ import { createZipArchive, type ZipEntry } from "../skills/templates/package.js"
 import { resolveTemplateProfile, templateDecisionMarkdown } from "../skills/templates/resolve.js";
 import { renderPaper } from "../skills/templates/render.js";
 import type { TemplateResolveInput } from "../skills/templates/types.js";
-import { approvalPolicyForMode } from "../runtime/approvals.js";
+import { ApprovalRecorder, approvalPolicyForMode } from "../runtime/approvals.js";
 import { DecisionRecorder } from "../runtime/decisions.js";
 import { runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "../runtime/events.js";
 import { createCoreToolRegistry, createToolContext } from "../runtime/tools.js";
@@ -115,11 +115,13 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     throwIfAborted(options.signal);
   }
   const toolRegistry = createCoreToolRegistry();
+  const approvalPolicy = approvalPolicyForMode("generate", { allowNetwork: Boolean(options.allowNetwork), allowOverwrite: true });
   const toolContext = createToolContext({
     runId,
     outputRoot,
     events: options.events,
-    permissions: approvalPolicyForMode("generate", { allowNetwork: Boolean(options.allowNetwork), allowOverwrite: true }),
+    permissions: approvalPolicy,
+    approvals: options.outputRoot ? new ApprovalRecorder(outputRoot, approvalPolicy, options.events) : undefined,
     recordToolCalls: Boolean(options.outputRoot)
   });
   const restoredState = options.outputRoot ? await readResearchPipelineState(outputRoot) : null;

@@ -25,7 +25,7 @@ import { createProviderAdapter } from "./providers/index.js";
 import { runResearchPipeline, type ResearchPipelineResult } from "./pipeline/research-pipeline.js";
 import { CompositeEventSink, JsonlEventSink, runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "./runtime/events.js";
 import { PlanEventSink } from "./runtime/plan.js";
-import { approvalPolicyFromPermissions } from "./runtime/approvals.js";
+import { ApprovalRecorder, approvalPolicyFromPermissions } from "./runtime/approvals.js";
 import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolRegistry } from "./runtime/tools.js";
 import { restoreRuntimeState } from "./runtime/runs.js";
 import { writeResearchPipelineState } from "./pipeline/stage-state.js";
@@ -131,20 +131,22 @@ export async function generateResearchRepo(idea: string, output: string, options
 
   const createdAt = options.createdAt ?? today();
   const toolRegistry = createCoreToolRegistry();
+  const approvalPolicy = approvalPolicyFromPermissions(
+    {
+      allowWrite: policy.allowWrite,
+      allowOverwrite: policy.allowOverwrite,
+      allowNetwork: policy.allowNetwork,
+      allowPublish: policy.allowPublish,
+      allowShell: false
+    },
+    "generate"
+  );
   const toolContext = createToolContext({
     runId,
     outputRoot: root,
     events: runtimeEvents,
-    permissions: approvalPolicyFromPermissions(
-      {
-        allowWrite: policy.allowWrite,
-        allowOverwrite: policy.allowOverwrite,
-        allowNetwork: policy.allowNetwork,
-        allowPublish: policy.allowPublish,
-        allowShell: false
-      },
-      "generate"
-    )
+    permissions: approvalPolicy,
+    approvals: new ApprovalRecorder(root, approvalPolicy, runtimeEvents)
   });
   try {
   const pipeline = options.runResearchPipeline

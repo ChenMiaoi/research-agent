@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { buildGithubExportPlan, publishWithGh, type CommandRunner } from "../src/github-export.js";
+import { generateResearchRepo } from "../src/generator.js";
 import {
   ApprovalRecorder,
   ApprovalRequiredError,
@@ -12,6 +13,7 @@ import {
   enforceApproval,
   readApprovalRecords
 } from "../src/runtime/approvals.js";
+import { readJsonlEvents } from "../src/runtime/events.js";
 
 test("approval policy gates network publish and overwrite risks by runtime mode", () => {
   const plan = approvalPolicyForMode("plan");
@@ -104,6 +106,25 @@ test("github publish refuses without approval and records the denied request", a
       ["pending", "denied"]
     );
     assert.deepEqual(records.at(-1)?.risk, ["write", "network", "publish"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generation wires approval recorder into runtime tool execution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-generate-approval-"));
+  const output = join(root, "project");
+  try {
+    await generateResearchRepo("A local-first research agent with approval traceability.", output, {
+      offline: true,
+      provider: "offline",
+      jsonlEvents: true
+    });
+
+    const records = await readApprovalRecords(output);
+    assert.ok(records.some((record) => record.action === "tool:artifact.write" && record.status === "auto_approved"));
+    const events = await readJsonlEvents(join(output, ".idea2repo", "trace.jsonl"));
+    assert.ok(events.some((event) => event.type === "approval.resolved"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
