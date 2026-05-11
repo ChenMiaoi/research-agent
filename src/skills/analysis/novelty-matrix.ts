@@ -1,5 +1,6 @@
 import type { PaperCandidate } from "../literature/types.js";
-import type { ClaimEvidenceRow } from "./evidence-extract.js";
+import type { PdfChunkIndexEntry } from "../pdf/chunk.js";
+import { trustedEvidenceRows, type ClaimEvidenceRow } from "./evidence-extract.js";
 
 export type NoveltyDimensionName = "problem" | "method" | "data" | "metric" | "evaluation" | "contribution";
 export type NoveltyDimensionStatus = "strong" | "medium" | "weak" | "missing" | "blocked";
@@ -27,8 +28,9 @@ export type NoveltyAssessment = {
   dimension_deltas: NoveltyDimensionDelta[];
 };
 
-export function assessNovelty(idea: string, candidates: PaperCandidate[], evidenceRows: ClaimEvidenceRow[] = []): NoveltyAssessment {
-  const verifiedRows = evidenceRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id);
+export function assessNovelty(idea: string, candidates: PaperCandidate[], evidenceRows: ClaimEvidenceRow[] = [], chunks?: PdfChunkIndexEntry[]): NoveltyAssessment {
+  const trustedRows = chunks ? trustedEvidenceRows(evidenceRows, chunks) : evidenceRows;
+  const verifiedRows = trustedRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id);
   const verifiedPaperIds = new Set(verifiedRows.map((row) => row.paper_id));
   if (!verifiedPaperIds.size) {
     return {
@@ -53,7 +55,7 @@ export function assessNovelty(idea: string, candidates: PaperCandidate[], eviden
   const highRiskDimensions = collisionDimensions.filter((dimension) => dimension.risk === "high").length;
   const mediumRiskDimensions = collisionDimensions.filter((dimension) => dimension.risk === "medium").length;
   if (overlaps.length >= 3) {
-    const refs = evidenceRefs(evidenceRows);
+    const refs = evidenceRefs(trustedRows);
     return {
       collision_risk: "high",
       novelty_cap: 6,
@@ -65,7 +67,7 @@ export function assessNovelty(idea: string, candidates: PaperCandidate[], eviden
     };
   }
   if (overlaps.length > 0 || highRiskDimensions > 0 || mediumRiskDimensions >= 2) {
-    const refs = evidenceRefs(evidenceRows).slice(0, 3);
+    const refs = evidenceRefs(trustedRows).slice(0, 3);
     return {
       collision_risk: "medium",
       reasons: ["At least one verified evidence-backed dimension overlaps with the idea terms."],
@@ -78,7 +80,7 @@ export function assessNovelty(idea: string, candidates: PaperCandidate[], eviden
     collision_risk: "low",
     reasons: ["No strong lexical overlap was detected in current candidates."],
     defensible_gap: "Keep novelty provisional until more verified related work is read.",
-    evidence_refs: evidenceRefs(evidenceRows).slice(0, 3),
+    evidence_refs: evidenceRefs(trustedRows).slice(0, 3),
     dimension_deltas: dimensionDeltas
   };
 }

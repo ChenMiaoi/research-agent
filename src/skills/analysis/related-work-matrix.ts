@@ -1,13 +1,16 @@
 import type { PaperCandidate } from "../literature/types.js";
+import type { PdfChunkIndexEntry } from "../pdf/chunk.js";
 import type { PdfManifestRecord } from "../pdf/provenance.js";
-import type { ClaimEvidenceRow } from "./evidence-extract.js";
+import { trustedEvidenceRows, type ClaimEvidenceRow } from "./evidence-extract.js";
 
-export function relatedWorkMatrixCsv(candidates: PaperCandidate[], manifest: PdfManifestRecord[], evidenceRows: ClaimEvidenceRow[]): string {
+export function relatedWorkMatrixCsv(candidates: PaperCandidate[], manifest: PdfManifestRecord[], evidenceRows: ClaimEvidenceRow[], chunks?: PdfChunkIndexEntry[], options: { verifiedOnly?: boolean } = {}): string {
+  const trustedRows = chunks ? trustedEvidenceRows(evidenceRows, chunks) : evidenceRows;
+  const trustedPaperIds = new Set(trustedRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id).map((row) => row.paper_id));
   const pdfByPaper = new Map(manifest.map((record) => [record.paper_id, record]));
-  const evidenceByPaper = new Map(evidenceRows.map((row) => [row.paper_id, row]));
+  const evidenceByPaper = new Map(trustedRows.map((row) => [row.paper_id, row]));
   const rows = [
     ["paper_id", "title", "year", "venue", "ccf_rank", "venue_match", "track_status", "pdf_status", "evidence_page", "evidence_quote", "evidence_chunk_id", "baseline_signal", "dataset_signal", "metric_signal", "collision_risk"],
-    ...candidates.map((candidate) => {
+    ...candidates.filter((candidate) => !options.verifiedOnly || trustedPaperIds.has(safePaperId(candidate.candidate_id))).map((candidate) => {
       const paperId = safePaperId(candidate.candidate_id);
       const evidence = evidenceByPaper.get(paperId);
       const text = `${evidence?.claim ?? ""} ${evidence?.quote ?? ""}`.toLowerCase();

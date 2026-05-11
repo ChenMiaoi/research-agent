@@ -504,7 +504,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     });
   }
   const hasVerifiedPdfEvidence = evidenceItems.length > 0;
-  const noteArtifacts = { ...evidenceRowsMarkdown(evidenceRows), ...paperNoteArtifacts(agentPaperNotes, chunks) };
+  const noteArtifacts = { ...evidenceRowsMarkdown(evidenceRows, chunks), ...paperNoteArtifacts(agentPaperNotes, chunks) };
   if (!canResumePdfReading) {
     await recordDecision({
       stage_id: "pdf_reading",
@@ -552,7 +552,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     relatedWorkAvailable = Boolean(agentRelatedWork);
   }
 
-  const novelty = assessNovelty(idea, candidates, evidenceRows);
+  const novelty = assessNovelty(idea, candidates, evidenceRows, chunks);
   let agentNovelty: NoveltyGapAnalysis | null = null;
   const noveltyResumed = (await canResumeStage("novelty_analysis")) && relatedWorkAvailable;
   let noveltyAvailable = false;
@@ -826,7 +826,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     agentStrategy,
     templatePackage
     }),
-    ...preservedOutputArtifacts,
+    ...preservableOutputArtifacts(preservedOutputArtifacts),
     ...preservedPaperNoteArtifacts(resumedArtifacts, trustedPaperNotePaths)
   };
   if (!(await canResumeStage("artifact_writing"))) {
@@ -927,7 +927,10 @@ function pipelineArtifacts(input: {
   agentStrategy: ResearchStrategy | null;
   templatePackage: PipelineTemplatePackage;
 }): Record<string, string> {
-  const relatedWorkReport = input.agentRelatedWork ? agentRelatedWorkMarkdown(input.agentRelatedWork) : topicClustersMarkdown(input.candidates);
+  const verifiedPapers = verifiedPaperRecords(input.candidates, input.manifest, input.evidenceRows);
+  const verifiedPaperIds = new Set(verifiedPapers.map((paper) => paper.paper_id));
+  const evidenceBackedCandidates = input.candidates.filter((candidate) => verifiedPaperIds.has(safePaperId(candidate.candidate_id)));
+  const relatedWorkReport = input.agentRelatedWork && verifiedPapers.length ? agentRelatedWorkMarkdown(input.agentRelatedWork) : topicClustersMarkdown(evidenceBackedCandidates);
   const noveltyReport = input.agentNovelty ? `${noveltyMatrixMarkdown(input.novelty)}\n## Agent Novelty Review\n\n${agentNoveltyMarkdown(input.agentNovelty)}` : noveltyMatrixMarkdown(input.novelty);
   const feasibilityReport = input.agentFeasibility ? agentFeasibilityMarkdown(input.agentFeasibility) : feasibilityMarkdown(input.ideaBrief.resource_constraints, 12);
   const experimentPlan = `${experimentPlanMarkdown()}\n## Evidence Status\n\n- Baselines evidence-backed: ${input.baselineRecommendations.length ? "yes" : "no"}\n- Datasets evidence-backed: ${input.datasetRecommendations.length ? "yes" : "no"}\n- Metrics evidence-backed: ${input.metricRecommendations.length ? "yes" : "no"}\n`;
@@ -935,7 +938,6 @@ function pipelineArtifacts(input: {
   const firstFourWeekPlan = input.agentStrategy ? agentFirstFourWeekPlanMarkdown(input.agentStrategy) : "# First 4 Week Plan\n\n1. Plan search and triage candidates.\n2. Acquire and read PDFs.\n3. Build evidence matrices.\n4. Lock experiments and paper story.\n";
   const paperStory = input.agentStrategy ? `# Paper Story\n\n${input.agentStrategy.paper_story}\n` : "# Paper Story\n\nPaper story is blocked until related work, novelty, and experiment evidence are verified.\n";
   const scorecard = `${strictScoreMarkdown(input.score)}${input.agentScore ? `\n## Agent Review\n\n${agentScoreMarkdown(input.agentScore)}` : ""}\nStrict mode: ${input.strict ? "enabled" : "disabled"}\n`;
-  const verifiedPapers = verifiedPaperRecords(input.candidates, input.manifest, input.evidenceRows);
   return {
     "reports/ccf_a_readiness_report.md": canonicalReadinessReportMarkdown(input),
     "reports/novelty_matrix.md": noveltyReport,
@@ -951,12 +953,12 @@ function pipelineArtifacts(input: {
     "docs/relative_work/search_plan.json": JSON.stringify(input.searchPlan, null, 2) + "\n",
     "docs/relative_work/search_report.md": input.searchReport,
     "docs/relative_work/candidates.json": JSON.stringify(input.candidates, null, 2) + "\n",
-    "docs/relative_work/triage_report.md": input.agentTriage ? agentTriageMarkdown(input.agentTriage) : triageReport(input.candidates),
+    "docs/relative_work/triage_report.md": triageReport(evidenceBackedCandidates),
     "docs/reference/pdf_manifest.json": JSON.stringify(input.manifest, null, 2) + "\n",
     "docs/reference/paper_notes/README.md": "# Paper Notes\n\nNo PDFs have been read yet. Every future note must cite page, quote, and chunk id.\n",
     ...input.noteArtifacts,
-    "docs/relative_work/related_work_matrix.csv": relatedWorkMatrixCsv(input.candidates, input.manifest, input.evidenceRows),
-    "docs/reference/claim_evidence_matrix.csv": evidenceRowsCsv(input.evidenceRows),
+    "docs/relative_work/related_work_matrix.csv": relatedWorkMatrixCsv(input.candidates, input.manifest, input.evidenceRows, input.chunks, { verifiedOnly: true }),
+    "docs/reference/claim_evidence_matrix.csv": evidenceRowsCsv(input.evidenceRows, input.chunks),
     "docs/relative_work/topic_clusters.md": relatedWorkReport,
     "docs/relative_work/novelty_gap_matrix.md": noveltyReport,
     "docs/relative_work/collision_risk.md": `# Collision Risk\n\n${input.novelty.collision_risk}\n\n${input.novelty.reasons.map((reason) => `- ${reason}`).join("\n")}\n`,
@@ -1033,13 +1035,14 @@ Legacy \`docs/...\` artifacts remain available for existing CLI and API consumer
 }
 
 function canonicalRelatedWorkReportMarkdown(input: PipelineArtifactInput, relatedWorkReport: string): string {
+  const verifiedCount = verifiedPaperRecords(input.candidates, input.manifest, input.evidenceRows).length;
   return `# Related Work Report
 
 ## Candidate Summary
 
-- Candidates collected: ${input.candidates.length}
-- Verified PDF-backed papers: ${verifiedPaperRecords(input.candidates, input.manifest, input.evidenceRows).length}
-- CCF-A or target-matched candidates: ${input.candidates.filter((candidate) => candidate.ccf_rank === "A" || candidate.venue_match === "target").length}
+- Retrieved candidates: ${input.candidates.length}
+- Verified PDF-backed papers: ${verifiedCount}
+- Evidence-backed candidates used below: ${verifiedCount}
 
 ## Related Work Synthesis
 
@@ -1205,6 +1208,12 @@ async function readArtifacts(readArtifact: (relativePath: string) => Promise<str
 function preservedPaperNoteArtifacts(artifacts: Record<string, string>, trustedPaths: Set<string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(artifacts).filter(([path]) => trustedPaths.has(path))
+  );
+}
+
+function preservableOutputArtifacts(artifacts: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(artifacts).filter(([path]) => path !== "docs/relative_work/triage_report.md")
   );
 }
 

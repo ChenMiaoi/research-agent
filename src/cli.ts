@@ -33,7 +33,7 @@ import type { PdfChunkIndexEntry } from "./skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "./skills/pdf/provenance.js";
 import { rebuildTrustedPdfChunks } from "./skills/pdf/trust.js";
 import type { PaperCandidate } from "./skills/literature/types.js";
-import { evidenceRowsMarkdown, evidenceText, extractEvidenceRows, evidenceRowsCsv } from "./skills/analysis/evidence-extract.js";
+import { evidenceRowsMarkdown, evidenceText, extractEvidenceRows, evidenceRowsCsv, trustedEvidenceRows } from "./skills/analysis/evidence-extract.js";
 import { relatedWorkMatrixCsv, topicClustersMarkdown } from "./skills/analysis/related-work-matrix.js";
 import { assessNovelty, noveltyMatrixMarkdown } from "./skills/analysis/novelty-matrix.js";
 import { strictCcfAScore, strictScoreMarkdown } from "./skills/analysis/ccf-a-score.js";
@@ -217,11 +217,12 @@ async function commandPapers(argv: string[]): Promise<number> {
   await ensureRuntimeLedgers(root);
   await replaceEvidenceItems(root, { runId, stageId: "pdf_reading" }, evidenceItemsFromRows({ runId, stageId: "pdf_reading", rows: evidenceRows, candidates, manifest, chunks }));
   await writeText(ensureChild(root, "docs/reference/pdf_chunks.json"), JSON.stringify(chunks, null, 2) + "\n");
-  await writeText(ensureChild(root, "docs/reference/claim_evidence_matrix.csv"), evidenceRowsCsv(evidenceRows));
-  for (const [relativePath, content] of Object.entries(evidenceRowsMarkdown(evidenceRows))) await writeText(ensureChild(root, relativePath), content);
-  await writeText(ensureChild(root, "docs/relative_work/related_work_matrix.csv"), relatedWorkMatrixCsv(candidates, manifest, evidenceRows));
-  await writeText(ensureChild(root, "docs/relative_work/topic_clusters.md"), topicClustersMarkdown(candidates));
-  const novelty = assessNovelty(await ideaFromArgsOrManifest(parsed, root), candidates, evidenceRows);
+  await writeText(ensureChild(root, "docs/reference/claim_evidence_matrix.csv"), evidenceRowsCsv(evidenceRows, chunks));
+  for (const [relativePath, content] of Object.entries(evidenceRowsMarkdown(evidenceRows, chunks))) await writeText(ensureChild(root, relativePath), content);
+  await writeText(ensureChild(root, "docs/relative_work/related_work_matrix.csv"), relatedWorkMatrixCsv(candidates, manifest, evidenceRows, chunks, { verifiedOnly: true }));
+  const backedCandidates = evidenceBackedCandidates(candidates, evidenceRows, chunks);
+  await writeText(ensureChild(root, "docs/relative_work/topic_clusters.md"), topicClustersMarkdown(backedCandidates));
+  const novelty = assessNovelty(await ideaFromArgsOrManifest(parsed, root), backedCandidates, evidenceRows, chunks);
   await writeText(ensureChild(root, "docs/relative_work/novelty_gap_matrix.md"), noveltyMatrixMarkdown(novelty));
   await writeText(ensureChild(root, "docs/relative_work/collision_risk.md"), `# Collision Risk\n\n${novelty.collision_risk}\n\n${novelty.reasons.map((reason) => `- ${reason}`).join("\n")}\n`);
   console.log(`Paper analysis written under ${ensureChild(root, "docs/relative_work")}`);
@@ -900,6 +901,19 @@ function normalizeReviewMode(mode: string | null | undefined, fallback: ReviewMo
 
 function verifiedEvidencePaperCount(rows: ReturnType<typeof extractEvidenceRows>): number {
   return new Set(rows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id).map((row) => row.paper_id)).size;
+}
+
+function evidenceBackedCandidates(candidates: PaperCandidate[], rows: ReturnType<typeof extractEvidenceRows>, chunks: PdfChunkIndexEntry[]): PaperCandidate[] {
+  const backedPaperIds = new Set(
+    trustedEvidenceRows(rows, chunks)
+      .filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id)
+      .map((row) => row.paper_id)
+  );
+  return candidates.filter((candidate) => backedPaperIds.has(safePaperId(candidate.candidate_id)));
+}
+
+function safePaperId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "paper";
 }
 
 function policyFromFlags(parsed: ParsedArgs): PermissionPolicy {

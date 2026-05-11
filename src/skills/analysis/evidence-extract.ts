@@ -37,9 +37,21 @@ export function extractEvidenceRows(chunks: PdfChunkIndexEntry[]): ClaimEvidence
   });
 }
 
-export function evidenceRowsMarkdown(rows: ClaimEvidenceRow[]): Record<string, string> {
+export function trustedEvidenceRows(rows: ClaimEvidenceRow[], chunks: PdfChunkIndexEntry[]): ClaimEvidenceRow[] {
+  const chunkByKey = new Map(chunks.map((chunk) => [`${chunk.paper_id}:${chunk.page}:${chunk.chunk_id}`, chunk]));
+  return rows.filter((row) => {
+    if (row.status !== "verified") return true;
+    if (!row.page || !row.quote || !row.chunk_id) return false;
+    const chunk = chunkByKey.get(`${row.paper_id}:${Number(row.page)}:${row.chunk_id}`);
+    if (!chunk) return false;
+    return normalizeEvidenceText(chunk.text).includes(normalizeEvidenceText(row.quote));
+  });
+}
+
+export function evidenceRowsMarkdown(rows: ClaimEvidenceRow[], chunks?: PdfChunkIndexEntry[]): Record<string, string> {
+  const trustedRows = chunks ? trustedEvidenceRows(rows, chunks) : rows;
   const grouped = new Map<string, ClaimEvidenceRow[]>();
-  for (const row of rows) grouped.set(row.paper_id, [...(grouped.get(row.paper_id) ?? []), row]);
+  for (const row of trustedRows) grouped.set(row.paper_id, [...(grouped.get(row.paper_id) ?? []), row]);
   const files: Record<string, string> = {};
   for (const [paperId, paperRows] of grouped) {
     const text = evidenceText(paperRows);
@@ -104,11 +116,16 @@ function capitalize(value: string): string {
   return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
-export function evidenceRowsCsv(rows: ClaimEvidenceRow[]): string {
+export function evidenceRowsCsv(rows: ClaimEvidenceRow[], chunks?: PdfChunkIndexEntry[]): string {
+  const trustedRows = chunks ? trustedEvidenceRows(rows, chunks) : rows;
   const header = ["paper_id", "claim", "claim_type", "confidence", "required_evidence", "planned_artifact", "status", "page", "section", "quote", "chunk_id"];
-  return [header, ...rows.map((row) => [row.paper_id, row.claim, row.claim_type, String(row.confidence), row.required_evidence, row.planned_artifact, row.status, row.page ?? "", row.section ?? "", row.quote ?? "", row.chunk_id ?? ""])]
+  return [header, ...trustedRows.map((row) => [row.paper_id, row.claim, row.claim_type, String(row.confidence), row.required_evidence, row.planned_artifact, row.status, row.page ?? "", row.section ?? "", row.quote ?? "", row.chunk_id ?? ""])]
     .map((row) => row.map(csvCell).join(","))
     .join("\n") + "\n";
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function csvCell(value: string): string {
