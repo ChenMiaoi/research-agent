@@ -19,6 +19,7 @@ const colors = {
 } as const;
 
 type ResearchThreadEntry = { kind: string; text: string; color: string };
+type CockpitSummary = { completed: number; active: number; blocked: number; skipped: number; total: number };
 
 export function nextInspectorTab(current: InspectorTab, direction: -1 | 1): InspectorTab {
   const index = INSPECTOR_TABS.indexOf(current);
@@ -87,6 +88,12 @@ function CockpitPlanPanel({ snapshot, height, width }: { snapshot: TuiRuntimeSna
     if (lines.length < innerRows) lines.push(line);
   };
   push(<Title key="plan-title" label="PLAN" />);
+  const summary = planSummary(snapshot);
+  push(
+    <Text key="plan-summary" color={colors.muted}>
+      {compactText(`${summary.completed}/${summary.total} done  active ${summary.active}  blocked ${summary.blocked}  skipped ${summary.skipped}`, Math.max(8, width - 4))}
+    </Text>
+  );
   const remaining = Math.max(0, innerRows - lines.length);
   for (const item of snapshot.plan.items.slice(0, remaining)) {
     const suffix = item.blocker ? ` - ${item.blocker}` : item.next_actions[0] ? ` -> ${item.next_actions[0]}` : "";
@@ -158,6 +165,7 @@ function InspectorPanel({
   };
   push(<Title key="inspector-title" label="INSPECTOR" />);
   for (const line of tabBarLines(activeTab, width)) push(line);
+  push(<Text key="inspector-action" color={colors.accent}>{compactText(cockpitActionLine(snapshot, activeTab), width)}</Text>);
   const remaining = Math.max(0, innerRows - lines.length);
 
   if (activeTab === "debug") {
@@ -191,6 +199,19 @@ function Title({ label }: { label: string }): React.ReactElement {
       <Text color={colors.accent}>]</Text>
     </Text>
   );
+}
+
+export function cockpitActionLine(snapshot: TuiRuntimeSnapshot, tab: InspectorTab): string {
+  const pending = snapshot.approvals.find((approval) => !approval.decision);
+  const activeStage = snapshot.plan.items.find((item) => item.status === "blocked" || item.status === "in_progress");
+  if (pending) return `Action: approve/deny ${pending.action}${pending.stage_id ? ` at ${pending.stage_id}` : ""}`;
+  if (activeStage?.status === "blocked") return `Action: retry/skip ${activeStage.stage_id}`;
+  if (tab === "artifacts" && snapshot.artifacts.length) return `Action: open ${snapshot.artifacts.at(-1)?.path}`;
+  if (tab === "evidence" && snapshot.events.some((event) => event.type === "evidence.extracted")) return "Action: open latest evidence card";
+  if (tab === "papers" && snapshot.events.some((event) => event.type === "paper.found" || event.type === "pdf.downloaded")) return "Action: open latest paper card";
+  if (tab === "score" && snapshot.events.some((event) => event.type === "score.updated")) return "Action: open score card";
+  if (tab === "debug") return "Action: inspect runtime event trace";
+  return "Action: edit idea, switch inspector, or wait for the next research event";
 }
 
 function tabBarLines(active: InspectorTab, width: number): React.ReactElement[] {
@@ -249,6 +270,17 @@ function inspectorLines(snapshot: TuiRuntimeSnapshot, tab: Exclude<InspectorTab,
     });
   }
   return [];
+}
+
+function planSummary(snapshot: TuiRuntimeSnapshot): CockpitSummary {
+  const summary: CockpitSummary = { completed: 0, active: 0, blocked: 0, skipped: 0, total: snapshot.plan.items.length };
+  for (const item of snapshot.plan.items) {
+    if (item.status === "completed") summary.completed += 1;
+    else if (item.status === "in_progress") summary.active += 1;
+    else if (item.status === "blocked") summary.blocked += 1;
+    else if (item.status === "skipped") summary.skipped += 1;
+  }
+  return summary;
 }
 
 function researchThreadEntries(events: Idea2RepoEvent[]): ResearchThreadEntry[] {

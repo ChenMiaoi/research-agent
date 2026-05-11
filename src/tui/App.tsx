@@ -31,7 +31,7 @@ import { completeSlashInput, getSlashHint, getSlashSuggestions, resolveSlashComm
 import { addHistoryEntry, readTuiInputHistory, writeTuiInputHistory } from "./history.js";
 import type { RuntimeArtifactEntry } from "./ArtifactPanel.js";
 import { ApprovalDialog, type ApprovalDialogDecision } from "./ApprovalDialog.js";
-import { nextInspectorTab, ResearchCockpit, type InspectorTab } from "./ResearchCockpit.js";
+import { INSPECTOR_TABS, nextInspectorTab, ResearchCockpit, type InspectorTab } from "./ResearchCockpit.js";
 import { applyTuiRuntimeEvent, createTuiRuntimeSnapshot, liveApprovalDetails, liveDecisionDetails, type TuiRuntimeSnapshot } from "./runtime-view.js";
 
 type Message = {
@@ -382,9 +382,12 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
       }
       return;
     }
-    if (!activePrompt && !input && currentRuntimeSnapshot(output) && (_input === "[" || _input === "]")) {
-      setInspectorTab((current) => nextInspectorTab(current, _input === "[" ? -1 : 1));
-      return;
+    if (!activePrompt && !input && currentRuntimeSnapshot(output)) {
+      const action = cockpitShortcutForInput(_input, { ctrl: Boolean(key.ctrl) });
+      if (action) {
+        handleCockpitShortcut(action);
+        return;
+      }
     }
     if (!activePrompt && input.startsWith("/") && slashSuggestions.length && (key.upArrow || key.downArrow)) {
       setSlashSelectionIndex((current) => wrapSelectIndex(current + (key.upArrow ? -1 : 1), slashSuggestions.length));
@@ -1258,6 +1261,141 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
 
   async function pendingApprovalRecords(root: string): Promise<ApprovalRecord[]> {
     return latestApprovalRecords(await readApprovalRecords(root)).filter((record) => record.status === "pending");
+  }
+
+  function handleCockpitShortcut(action: CockpitShortcut): void {
+    const snapshot = currentRuntimeSnapshot(output);
+    if (!snapshot) return;
+    if (action.type === "previous_tab") {
+      setInspectorTab((current) => nextInspectorTab(current, -1));
+      return;
+    }
+    if (action.type === "next_tab") {
+      setInspectorTab((current) => nextInspectorTab(current, 1));
+      return;
+    }
+    if (action.type === "tab") {
+      setInspectorTab(action.tab);
+      return;
+    }
+    if (action.type === "approve" || action.type === "deny") {
+      void resolveApprovalFromCommand(undefined, action.type === "approve" ? "approved" : "denied");
+      return;
+    }
+    const mutationBlocker = cockpitMutationBlocker(snapshot, action.type);
+    if (mutationBlocker) {
+      append({ role: "assistant", title: "Approval pending", text: mutationBlocker });
+      return;
+    }
+    if (busy && (action.type === "retry" || action.type === "skip" || action.type === "edit")) {
+      append({ role: "assistant", title: "Run is active", text: "Resolve approvals or cancel the active run before changing stages or editing the idea." });
+      return;
+    }
+    if (action.type === "open") {
+      void openCockpitSelection(snapshot);
+      return;
+    }
+    if (action.type === "retry") {
+      void retryCockpitStage(snapshot);
+      return;
+    }
+    if (action.type === "skip") {
+      void skipCockpitStage(snapshot);
+      return;
+    }
+    if (action.type === "edit") {
+      void editCockpitIdea();
+    }
+  }
+
+  async function openCockpitSelection(snapshot: TuiRuntimeSnapshot): Promise<void> {
+    if (inspectorTab === "approvals") {
+      const pending = await pendingApprovalRecords(output);
+      if (pending[0]) {
+        openApprovalDialog(pending[0], output);
+        return;
+      }
+    }
+    if (inspectorTab === "artifacts") {
+      const artifact = snapshot.artifacts.at(-1);
+      if (!artifact) {
+        append({ role: "assistant", title: "No artifact selected", text: "No live artifacts have been written yet." });
+        return;
+      }
+      await runBusy(async () => {
+        const content = await readFile(ensureChild(snapshot.outputRoot, artifact.path), "utf8");
+        append({ role: "assistant", title: artifact.path, text: compactText(content, 160), details: content.split(/\r?\n/).filter(Boolean).slice(0, 8) });
+      });
+      return;
+    }
+    if (inspectorTab === "score") {
+      const score = latestRuntimeEvent(snapshot, "score.updated");
+      append({
+        role: "assistant",
+        title: "Score card",
+        text: score ? `${score.score}/${score.max_score} confidence ${score.confidence}` : "No score snapshot yet.",
+        details: score?.hard_blockers.length ? score.hard_blockers.slice(0, 8) : undefined
+      });
+      return;
+    }
+    if (inspectorTab === "papers") {
+      const paper = latestRuntimeEvent(snapshot, "paper.found");
+      const download = latestRuntimeEvent(snapshot, "pdf.downloaded");
+      append({
+        role: "assistant",
+        title: "Paper card",
+        text: paper ? `${paper.title}${paper.venue ? ` (${paper.venue}${paper.year ? ` ${paper.year}` : ""})` : ""}` : download ? `${download.paper_id} PDF downloaded` : "No paper candidate yet.",
+        details: [paper?.reason, paper?.pdf_status ? `PDF: ${paper.pdf_status}` : "", download?.path ? `Downloaded: ${download.path}` : ""].filter((line): line is string => Boolean(line))
+      });
+      return;
+    }
+    if (inspectorTab === "evidence") {
+      const evidence = latestRuntimeEvent(snapshot, "evidence.extracted");
+      append({
+        role: "assistant",
+        title: "Evidence card",
+        text: evidence ? `${evidence.paper_id} p.${evidence.page}: ${evidence.claim}` : "No extracted evidence yet.",
+        details: evidence ? [`Quote: ${evidence.quote}`, `Chunk: ${evidence.chunk_id}`, `Confidence: ${evidence.confidence}`] : undefined
+      });
+      return;
+    }
+    append(cockpitOpenFallbackMessage(snapshot, inspectorTab));
+  }
+
+  async function retryCockpitStage(snapshot: TuiRuntimeSnapshot): Promise<void> {
+    const stageId = cockpitStageTarget(snapshot);
+    if (!stageId) {
+      append({ role: "assistant", title: "No stage selected", text: "No blocked, failed, skipped, or active stage is available to retry." });
+      return;
+    }
+    await runBusy(async () => {
+      const result = await retryRuntimeStage(output, stageId, { reason: "Retry requested from cockpit.", execute: false });
+      append({ role: "assistant", title: "Stage retry prepared", text: `${result.stage_id} and downstream stages were reset to pending.`, details: [`Snapshots: ${result.snapshots.length}`, `Run: ${result.run_id}`] });
+    });
+  }
+
+  async function skipCockpitStage(snapshot: TuiRuntimeSnapshot): Promise<void> {
+    const stageId = cockpitStageTarget(snapshot);
+    if (!stageId) {
+      append({ role: "assistant", title: "No stage selected", text: "No blocked or active stage is available to skip." });
+      return;
+    }
+    const reason = await promptForInput(`Skip reason for ${stageId}:`, { submittedMessage: "submitted skip reason", cancelMessage: "Skip cancelled." });
+    if (!reason.trim()) return;
+    await runBusy(async () => {
+      const result = await skipRuntimeStage(output, stageId, reason);
+      append({ role: "assistant", title: "Stage skipped", text: `${result.stage_id} is blocked with a visible decision record.`, details: [`Run: ${result.run_id}`] });
+    });
+  }
+
+  async function editCockpitIdea(): Promise<void> {
+    const nextIdea = await promptForInput("Edit research idea:", {
+      submittedMessage: "submitted edited idea",
+      cancelMessage: "Idea edit cancelled.",
+      historyEnabled: true,
+      initialValue: lastUserIdea(messages) ?? ""
+    });
+    if (nextIdea.trim()) await startResearchWizard(nextIdea);
   }
 
   function openApprovalDialog(record: ApprovalRecord, root: string): void {
@@ -2754,6 +2892,68 @@ export function approvalRecordFromRequestedEvent(event: Idea2RepoEvent, mode: Ru
     status: "pending",
     created_at: event.timestamp
   };
+}
+
+export type CockpitShortcut =
+  | { type: "previous_tab" }
+  | { type: "next_tab" }
+  | { type: "tab"; tab: InspectorTab }
+  | { type: "open" }
+  | { type: "approve" }
+  | { type: "deny" }
+  | { type: "retry" }
+  | { type: "skip" }
+  | { type: "edit" };
+
+export function cockpitShortcutForInput(input: string, options: { ctrl?: boolean } = {}): CockpitShortcut | null {
+  const normalized = input.toLowerCase();
+  if (normalized === "[") return { type: "previous_tab" };
+  if (normalized === "]") return { type: "next_tab" };
+  if (/^[1-6]$/.test(normalized)) return { type: "tab", tab: INSPECTOR_TABS[Number(normalized) - 1] ?? "evidence" };
+  if (!options.ctrl) return null;
+  if (normalized === "o") return { type: "open" };
+  if (normalized === "a") return { type: "approve" };
+  if (normalized === "d") return { type: "deny" };
+  if (normalized === "r") return { type: "retry" };
+  if (normalized === "s") return { type: "skip" };
+  if (normalized === "e") return { type: "edit" };
+  return null;
+}
+
+export function cockpitMutationBlocker(snapshot: TuiRuntimeSnapshot, actionType: CockpitShortcut["type"]): string | null {
+  if (actionType !== "retry" && actionType !== "skip" && actionType !== "edit") return null;
+  const pending = snapshot.approvals.find((approval) => !approval.decision);
+  if (!pending) return null;
+  const operation = actionType === "edit" ? "editing the idea" : actionType === "retry" ? "retrying the stage" : "skipping the stage";
+  return `Resolve pending approval ${pending.id} for ${pending.action} before ${operation}.`;
+}
+
+export function cockpitOpenFallbackMessage(snapshot: TuiRuntimeSnapshot, tab: InspectorTab): { role: "assistant"; title: string; text: string; details?: string[] } {
+  if (tab === "debug") {
+    return {
+      role: "assistant",
+      title: "Runtime trace",
+      text: `${snapshot.events.length} live event${snapshot.events.length === 1 ? "" : "s"} recorded.`,
+      details: snapshot.events.slice(-8).map((event) => `${event.timestamp} ${event.type}`)
+    };
+  }
+  return {
+    role: "assistant",
+    title: "No card selected",
+    text: `No ${tab} card is available to open yet.`
+  };
+}
+
+export function cockpitStageTarget(snapshot: TuiRuntimeSnapshot): ResearchStageId | null {
+  const item =
+    snapshot.plan.items.find((candidate) => candidate.status === "blocked") ??
+    snapshot.plan.items.find((candidate) => candidate.status === "skipped") ??
+    snapshot.plan.items.find((candidate) => candidate.status === "in_progress");
+  return (item?.stage_id as ResearchStageId | undefined) ?? null;
+}
+
+function latestRuntimeEvent<Type extends Idea2RepoEvent["type"]>(snapshot: TuiRuntimeSnapshot, type: Type): Extract<Idea2RepoEvent, { type: Type }> | undefined {
+  return snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: Type }> => event.type === type).at(-1);
 }
 
 function providerLabel(provider: string): string {

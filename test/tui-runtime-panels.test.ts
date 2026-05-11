@@ -3,9 +3,9 @@ import { test } from "node:test";
 import React from "react";
 import { ApprovalDialog } from "../src/tui/ApprovalDialog.js";
 import { ArtifactPanel } from "../src/tui/ArtifactPanel.js";
-import { approvalRecordFromRequestedEvent, isBusySubmissionAllowed } from "../src/tui/App.js";
+import { approvalRecordFromRequestedEvent, cockpitMutationBlocker, cockpitOpenFallbackMessage, cockpitShortcutForInput, cockpitStageTarget, isBusySubmissionAllowed } from "../src/tui/App.js";
 import { PlanPanel } from "../src/tui/PlanPanel.js";
-import { nextInspectorTab, ResearchCockpit } from "../src/tui/ResearchCockpit.js";
+import { cockpitActionLine, nextInspectorTab, ResearchCockpit } from "../src/tui/ResearchCockpit.js";
 import { TracePanel } from "../src/tui/TracePanel.js";
 import type { Idea2RepoEvent } from "../src/runtime/events.js";
 import type { PlanState } from "../src/runtime/plan.js";
@@ -218,6 +218,66 @@ test("TUI keeps approval commands available while a run is busy", () => {
   assert.deepEqual(record?.risk, ["network", "pdf_download"]);
   assert.equal(record?.mode, "research");
   assert.equal(record?.status, "pending");
+});
+
+test("research cockpit exposes direct actions for inspector cards and stages", () => {
+  let snapshot = createTuiRuntimeSnapshot("run-1", "generated_repos/demo", "2026-01-01T00:00:00Z");
+  for (const event of [
+    {
+      type: "artifact.written",
+      run_id: "run-1",
+      path: "reports/ccf_a_readiness_report.md",
+      sha256: "abc",
+      bytes: 120,
+      timestamp: "2026-01-01T00:00:01Z"
+    },
+    {
+      type: "stage.blocked",
+      run_id: "run-1",
+      stage_id: "pdf_acquisition",
+      reason: "Pending PDF approval",
+      timestamp: "2026-01-01T00:00:02Z"
+    },
+    {
+      type: "approval.requested",
+      run_id: "run-1",
+      approval_id: "approval-1",
+      stage_id: "pdf_acquisition",
+      action: "tool:pdf.acquire",
+      risk: "network, pdf_download",
+      timestamp: "2026-01-01T00:00:03Z"
+    }
+  ] satisfies Idea2RepoEvent[]) {
+    snapshot = applyTuiRuntimeEvent(snapshot, event);
+  }
+
+  const text = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "approvals" }));
+  assert.match(text, /Action: approve\/deny/);
+  assert.match(text, /0\/14 done/);
+  assert.match(text, /blocked/);
+  assert.equal(cockpitActionLine(snapshot, "approvals"), "Action: approve/deny tool:pdf.acquire at pdf_acquisition");
+  assert.equal(cockpitStageTarget(snapshot), "pdf_acquisition");
+  assert.deepEqual(cockpitShortcutForInput("1"), { type: "tab", tab: "evidence" });
+  assert.deepEqual(cockpitShortcutForInput("6"), { type: "tab", tab: "debug" });
+  assert.deepEqual(cockpitShortcutForInput("o", { ctrl: true }), { type: "open" });
+  assert.deepEqual(cockpitShortcutForInput("a", { ctrl: true }), { type: "approve" });
+  assert.deepEqual(cockpitShortcutForInput("d", { ctrl: true }), { type: "deny" });
+  assert.deepEqual(cockpitShortcutForInput("r", { ctrl: true }), { type: "retry" });
+  assert.deepEqual(cockpitShortcutForInput("s", { ctrl: true }), { type: "skip" });
+  assert.deepEqual(cockpitShortcutForInput("e", { ctrl: true }), { type: "edit" });
+  assert.equal(cockpitShortcutForInput("s"), null);
+  assert.match(cockpitMutationBlocker(snapshot, "retry") ?? "", /Resolve pending approval approval-1/);
+  assert.match(cockpitMutationBlocker(snapshot, "skip") ?? "", /before skipping the stage/);
+  assert.match(cockpitMutationBlocker(snapshot, "edit") ?? "", /before editing the idea/);
+  assert.equal(cockpitMutationBlocker(snapshot, "approve"), null);
+  const approvalsFallback = cockpitOpenFallbackMessage(snapshot, "approvals");
+  assert.equal(approvalsFallback.title, "No card selected");
+  const approvalsFallbackDetails = approvalsFallback.details?.join("\n") ?? "";
+  assert.equal(approvalsFallbackDetails, "");
+  assert.doesNotMatch(`${approvalsFallback.text}\n${approvalsFallbackDetails}`, /run\.started|artifact\.written|stage\.blocked|approval\.requested/);
+  const debugFallback = cockpitOpenFallbackMessage(snapshot, "debug");
+  assert.equal(debugFallback.title, "Runtime trace");
+  assert.match(debugFallback.details?.join("\n") ?? "", /artifact\.written/);
 });
 
 function textContent(value: unknown): string {
