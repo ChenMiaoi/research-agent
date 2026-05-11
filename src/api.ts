@@ -15,9 +15,11 @@ import { readApprovalRecords, resolveApprovalRecord } from "./runtime/approvals.
 import { readDecisionRecords } from "./runtime/decisions.js";
 import { readPlanState } from "./runtime/plan.js";
 import { isFinalStatus, retryRuntimeStage, RunManager, skipRuntimeStage, type RuntimeRunRecord } from "./runtime/runs.js";
-import { CompositeEventSink, JsonlEventSink, type Idea2RepoEvent, type EventSink } from "./runtime/events.js";
+import { CompositeEventSink, JsonlEventSink, readJsonlEvents, type Idea2RepoEvent, type EventSink } from "./runtime/events.js";
 import { restoreArtifactSnapshot } from "./runtime/artifacts.js";
+import { readEvidenceLedger, readScoreSnapshots } from "./runtime/ledgers.js";
 import type { ResearchStageId } from "./pipeline/stages.js";
+import type { ArtifactProjection, ArtifactProjectionKind, RuntimeLegacyMode, RuntimeProductMode } from "./api-contract.js";
 
 export type ApiServer = {
   server: Server;
@@ -26,8 +28,10 @@ export type ApiServer = {
 };
 
 type JsonValue = Record<string, unknown> | unknown[];
+type RuntimeModeSelection = { product: RuntimeProductMode; legacy: RuntimeLegacyMode };
 
 const defaultRunManager = new RunManager();
+const runModes = new Map<string, RuntimeModeSelection>();
 
 export function createApiHandler(options: { runManager?: RunManager } = {}) {
   const runManager = options.runManager ?? defaultRunManager;
@@ -84,7 +88,7 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
     return;
   }
   if (request.method === "GET" && path === "/runs") {
-    sendJson(response, 200, { runs: runManager.list() });
+    sendJson(response, 200, { runs: runManager.list().map((run) => ({ ...run, run_id: run.id, ...runLinks(run.id) })) });
     return;
   }
   const runMatch = /^\/runs\/([^/]+)(?:\/(.*))?$/.exec(path);
@@ -92,11 +96,15 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
     const run = requiredRun(runManager, decodeURIComponent(runMatch[1]!));
     const suffix = runMatch[2] ?? "";
     if (!suffix) {
-      sendJson(response, 200, runSnapshot(run));
+      sendJson(response, 200, runResponse(run));
       return;
     }
     if (suffix === "events") {
-      sendSse(response, runManager, run);
+      await sendSse(response, runManager, run);
+      return;
+    }
+    if (suffix === "events/replay") {
+      sendJson(response, 200, { run_id: run.id, events: await replayEventsForRun(run) });
       return;
     }
     if (suffix === "plan") {
@@ -109,7 +117,16 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
     }
     if (suffix === "artifacts") {
       const artifacts = await artifactEntries(run.output_root);
-      sendJson(response, 200, { run_id: run.id, root: run.output_root, artifacts, tree: artifactTree(artifacts) });
+      sendJson(response, 200, { run_id: run.id, root: run.output_root, artifacts, projections: artifactProjections(artifacts), tree: artifactTree(artifacts) });
+      return;
+    }
+    if (suffix === "evidence") {
+      const evidence = (await readEvidenceLedger(run.output_root)).filter((item) => item.run_id === run.id);
+      sendJson(response, 200, { run_id: run.id, evidence, current: evidence.filter((item) => item.current) });
+      return;
+    }
+    if (suffix === "scores" || suffix === "score-snapshots") {
+      sendJson(response, 200, { run_id: run.id, score_snapshots: (await readScoreSnapshots(run.output_root)).filter((snapshot) => snapshot.run_id === run.id) });
       return;
     }
     if (suffix === "approvals") {
@@ -123,22 +140,16 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
   if (path === "/runs") {
     const idea = requiredString(body.idea, "idea");
     const output = resolve(requiredString(body.output, "output"));
+    const mode = runtimeModeFromBody(body);
     const run = runManager.start({ idea, outputRoot: output }, async ({ runId, events, signal }) => {
       const result = await generateResearchRepo(idea, output, {
-        ...generateOptionsFromBody(body),
+        ...generateOptionsFromBody(body, mode),
         runResearchPipeline: body.run_research_pipeline !== false,
         jsonlEvents: body.jsonl_events !== false,
         runId,
         eventSink: events,
         signal,
-        permissionPolicy: {
-          allowWrite: true,
-          allowOverwrite: Boolean(body.force),
-          allowNetwork: Boolean(body.allow_network),
-          allowLogin: false,
-          allowInstall: false,
-          allowPublish: false
-        }
+        permissionPolicy: permissionPolicyFromBody(body, mode)
       });
       return {
         root: result.root,
@@ -147,14 +158,12 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
         fallback_reason: result.fallback_reason
       };
     });
+    runModes.set(run.id, mode);
     sendJson(response, 202, {
       run_id: run.id,
       status: run.status,
       output_root: run.output_root,
-      events_url: `/runs/${encodeURIComponent(run.id)}/events`,
-      plan_url: `/runs/${encodeURIComponent(run.id)}/plan`,
-      decisions_url: `/runs/${encodeURIComponent(run.id)}/decisions`,
-      artifacts_url: `/runs/${encodeURIComponent(run.id)}/artifacts`
+      ...runLinks(run.id)
     });
     return;
   }
@@ -210,16 +219,10 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
     }
   }
   if (path === "/generate") {
+    const mode = runtimeModeFromBody(body);
     const result = await generateResearchRepo(requiredString(body.idea, "idea"), requiredString(body.output, "output"), {
-      ...generateOptionsFromBody(body),
-      permissionPolicy: {
-        allowWrite: true,
-        allowOverwrite: Boolean(body.force),
-        allowNetwork: Boolean(body.allow_network),
-        allowLogin: false,
-        allowInstall: false,
-        allowPublish: false
-      }
+      ...generateOptionsFromBody(body, mode),
+      permissionPolicy: permissionPolicyFromBody(body, mode)
     });
     sendJson(response, 200, {
       root: result.root,
@@ -235,7 +238,9 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
       codex_model: result.model,
       fallback_reason: result.fallback_reason,
       research_pipeline_stages: result.research_pipeline?.state.stages.length,
-      template_profile_id: result.template_profile_id
+      template_profile_id: result.template_profile_id,
+      mode: mode.product,
+      legacy_mode: mode.legacy
     });
     return;
   }
@@ -259,7 +264,7 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
   if (path === "/artifacts") {
     const root = await existingRoot(requiredString(body.output, "output"));
     const artifacts = await artifactEntries(root);
-    sendJson(response, 200, { root, artifacts, tree: artifactTree(artifacts) });
+    sendJson(response, 200, { root, artifacts, projections: artifactProjections(artifacts), tree: artifactTree(artifacts) });
     return;
   }
   if (path === "/artifacts/read") {
@@ -364,31 +369,62 @@ function sendJson(response: ServerResponse, statusCode: number, payload: JsonVal
   response.end(body);
 }
 
-function sendSse(response: ServerResponse, runManager: RunManager, run: RuntimeRunRecord): void {
+async function sendSse(response: ServerResponse, runManager: RunManager, run: RuntimeRunRecord): Promise<void> {
   response.statusCode = 200;
   response.setHeader("content-type", "text/event-stream; charset=utf-8");
   response.setHeader("cache-control", "no-cache, no-transform");
   response.setHeader("connection", "keep-alive");
   response.setHeader("access-control-allow-origin", "*");
-  for (const event of run.events) writeSseEvent(response, event);
-  if (isFinalStatus(run.status)) {
-    response.end();
-    return;
-  }
+  const liveBuffer: Idea2RepoEvent[] = [];
   const unsubscribe = runManager.subscribe(run.id, (event) => {
+    liveBuffer.push(event);
+  });
+  let lastWritten = "";
+  const writeUnique = (event: Idea2RepoEvent): void => {
+    const key = JSON.stringify(event);
+    if (key === lastWritten) return;
+    lastWritten = key;
     writeSseEvent(response, event);
-    const current = runManager.get(run.id);
-    if (current && isFinalStatus(current.status)) {
+  };
+  for (const event of await replayEventsForRun(run)) writeUnique(event);
+  for (const event of liveBuffer.splice(0)) writeUnique(event);
+  const live = runManager.subscribe(run.id, (event) => {
+    writeUnique(event);
+    const latest = runManager.get(run.id);
+    if (latest && isFinalStatus(latest.status)) {
       unsubscribe?.();
+      live?.();
       response.end();
     }
   });
-  if (!unsubscribe) response.end();
+  for (const event of liveBuffer.splice(0)) writeUnique(event);
+  unsubscribe?.();
+  const current = runManager.get(run.id) ?? run;
+  if (isFinalStatus(current.status)) {
+    live?.();
+    response.end();
+    return;
+  }
+  if (!live) response.end();
 }
 
 function writeSseEvent(response: ServerResponse, event: Idea2RepoEvent): void {
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function replayEventsForRun(run: RuntimeRunRecord): Promise<Idea2RepoEvent[]> {
+  const trace = await readJsonlEvents(join(run.output_root, ".idea2repo", "trace.jsonl")).catch(() => []);
+  const seen = new Set<string>();
+  const events: Idea2RepoEvent[] = [];
+  for (const event of [...trace, ...run.events]) {
+    if (event.run_id !== run.id) continue;
+    const key = JSON.stringify(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    events.push(event);
+  }
+  return events;
 }
 
 function runControlEvents(runManager: RunManager, run: RuntimeRunRecord): EventSink {
@@ -403,13 +439,38 @@ function runSnapshot(run: RuntimeRunRecord): Record<string, unknown> {
   return snapshot;
 }
 
+function runResponse(run: RuntimeRunRecord): Record<string, unknown> {
+  return {
+    ...runSnapshot(run),
+    run_id: run.id,
+    ...runLinks(run.id)
+  };
+}
+
+function runLinks(runId: string): Record<string, unknown> {
+  const mode = runModes.get(runId) ?? { product: "generate" as const, legacy: "generate" as const };
+  const encoded = encodeURIComponent(runId);
+  return {
+    mode: mode.product,
+    legacy_mode: mode.legacy,
+    events_url: `/runs/${encoded}/events`,
+    event_replay_url: `/runs/${encoded}/events/replay`,
+    plan_url: `/runs/${encoded}/plan`,
+    decisions_url: `/runs/${encoded}/decisions`,
+    artifacts_url: `/runs/${encoded}/artifacts`,
+    evidence_url: `/runs/${encoded}/evidence`,
+    score_snapshots_url: `/runs/${encoded}/scores`,
+    approvals_url: `/runs/${encoded}/approvals`
+  };
+}
+
 function requiredRun(runManager: RunManager, runId: string): RuntimeRunRecord {
   const run = runManager.get(runId);
   if (!run) throw new HttpError(404, "run not found");
   return run;
 }
 
-function generateOptionsFromBody(body: Record<string, unknown>): GenerateOptions {
+function generateOptionsFromBody(body: Record<string, unknown>, mode = runtimeModeFromBody(body)): GenerateOptions {
   return {
     requestedDomains: stringArray(body.domains),
     timelineWeeks: numberValue(body.weeks, 12),
@@ -421,7 +482,7 @@ function generateOptionsFromBody(body: Record<string, unknown>): GenerateOptions
     model: stringOrNull(body.model),
     reasoningEffort: stringOrNull(body.reasoning_effort),
     runResearchPipeline: Boolean(body.run_research_pipeline),
-    allowNetwork: Boolean(body.allow_network),
+    allowNetwork: allowNetworkFromBody(body, mode),
     downloadPdfs: Boolean(body.download_pdfs),
     maxPapers: numberValue(body.max_papers, 20),
     sources: stringArray(body.sources),
@@ -433,6 +494,37 @@ function generateOptionsFromBody(body: Record<string, unknown>): GenerateOptions
     templateYear: optionalNumberValue(body.template_year),
     compilePaper: Boolean(body.compile_paper),
     packageOverleaf: Boolean(body.package_overleaf)
+  };
+}
+
+function runtimeModeFromBody(body: Record<string, unknown>): RuntimeModeSelection {
+  const raw = stringOrNull(body.mode)?.toLowerCase().replace("_", "-") ?? "generate";
+  if (raw === "read-only" || raw === "readonly" || raw === "plan") return { product: "read-only", legacy: "plan" };
+  if (raw === "research") return { product: "research", legacy: "generate" };
+  if (raw === "publish") return { product: "publish", legacy: "publish" };
+  if (raw === "danger" || raw === "danger-full-access") return { product: "danger", legacy: "danger-full-access" };
+  return { product: "generate", legacy: "generate" };
+}
+
+function allowNetworkFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): boolean {
+  if (mode.product === "research" || mode.product === "danger") return body.allow_network !== false;
+  return Boolean(body.allow_network);
+}
+
+function permissionPolicyFromBody(body: Record<string, unknown>, mode: RuntimeModeSelection): GenerateOptions["permissionPolicy"] {
+  if (mode.product === "read-only") {
+    return { allowWrite: false, allowOverwrite: false, allowNetwork: false, allowLogin: false, allowInstall: false, allowPublish: false };
+  }
+  if (mode.product === "danger") {
+    return { allowWrite: true, allowOverwrite: true, allowNetwork: allowNetworkFromBody(body, mode), allowLogin: false, allowInstall: false, allowPublish: false };
+  }
+  return {
+    allowWrite: true,
+    allowOverwrite: Boolean(body.force),
+    allowNetwork: allowNetworkFromBody(body, mode),
+    allowLogin: false,
+    allowInstall: false,
+    allowPublish: Boolean(body.allow_publish)
   };
 }
 
@@ -450,8 +542,8 @@ function safeChild(root: string, relativePath: string): string {
   return child;
 }
 
-async function artifactEntries(root: string): Promise<Array<{ path: string; bytes: number; text: boolean }>> {
-  const entries: Array<{ path: string; bytes: number; text: boolean }> = [];
+async function artifactEntries(root: string): Promise<ArtifactProjection[]> {
+  const entries: ArtifactProjection[] = [];
   async function walk(dir: string): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -459,12 +551,39 @@ async function artifactEntries(root: string): Promise<Array<{ path: string; byte
         await walk(path);
       } else if (entry.isFile()) {
         const pathStat = await stat(path);
-        entries.push({ path: toPosix(relative(root, path)), bytes: pathStat.size, text: await looksText(path) });
+        const relativePath = toPosix(relative(root, path));
+        entries.push({ kind: artifactKind(relativePath), path: relativePath, bytes: pathStat.size, text: await looksText(path) });
       }
     }
   }
   await walk(root);
   return entries.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function artifactProjections(entries: ArtifactProjection[]): Record<ArtifactProjectionKind, ArtifactProjection[]> {
+  const projections: Record<ArtifactProjectionKind, ArtifactProjection[]> = {
+    reports: [],
+    evidence: [],
+    plans: [],
+    paper: [],
+    runtime: [],
+    other: []
+  };
+  for (const entry of entries) projections[entry.kind].push(entry);
+  return projections;
+}
+
+function artifactKind(path: string): ArtifactProjectionKind {
+  if (path.startsWith(".idea2repo/")) {
+    if (path.endsWith("evidence.jsonl")) return "evidence";
+    return "runtime";
+  }
+  if (path.startsWith("reports/") || path.startsWith("docs/diagnosis/") || path.startsWith("docs/relative_work/")) return "reports";
+  if (path.startsWith("plans/") || path.startsWith("docs/execution_plan/") || path.startsWith("docs/proposal/")) return "plans";
+  if (path.startsWith("paper/") || path.startsWith("papers/")) return "paper";
+  if (path.startsWith("docs/reference/") || path.includes("evidence") || path.endsWith("papers.bib")) return "evidence";
+  if (path.startsWith("docs/runtime/")) return "runtime";
+  return "other";
 }
 
 function artifactTree(entries: Array<{ path: string; bytes: number; text: boolean }>): Record<string, unknown> {

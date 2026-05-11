@@ -38,6 +38,13 @@ test("Node API preserves health, generate, status, validate, artifact read, and 
     });
     assert.match(artifact.content, /CCF-A Readiness Report/);
 
+    const artifacts = await postJson(`${server.url}/artifacts`, { output });
+    assert.ok(Array.isArray(artifacts.artifacts));
+    assert.ok(artifacts.artifacts.some((entry: { path: string }) => entry.path === "docs/diagnosis/ccf_a_readiness_report.md"));
+    assert.ok(artifacts.tree.docs);
+    assert.ok(Array.isArray(artifacts.projections.reports));
+    assert.ok(artifacts.projections.reports.some((entry: { path: string }) => entry.path === "docs/diagnosis/ccf_a_readiness_report.md"));
+
     const dryRun = await postJson(`${server.url}/github/dry-run`, { output });
     assert.equal(dryRun.dry_run, true);
     assert.ok(dryRun.would_create_issues > 0);

@@ -1,6 +1,16 @@
+import type { ApprovalRecord } from "./runtime/approvals.js";
+import type { Idea2RepoEvent } from "./runtime/events.js";
+import type { EvidenceItem, ScoreSnapshot } from "./runtime/ledgers.js";
+import type { RuntimeRunSnapshot, RuntimeRunStatus, StageControlResult } from "./runtime/runs.js";
+import type { ResearchStageId } from "./pipeline/stages.js";
+
+export type RuntimeProductMode = "read-only" | "research" | "generate" | "publish" | "danger";
+export type RuntimeLegacyMode = "plan" | "generate" | "publish" | "danger-full-access";
+
 export type GenerateRequest = {
   idea: string;
   output: string;
+  mode?: RuntimeProductMode | RuntimeLegacyMode;
   domains?: string[];
   weeks?: number;
   resources?: string[];
@@ -71,3 +81,91 @@ export type GithubDryRunRequest = {
   repo_name?: string;
   create_issues?: boolean;
 };
+
+export type RuntimeRunCreateRequest = GenerateRequest & {
+  jsonl_events?: boolean;
+};
+
+export type RuntimeRunLinks = {
+  mode: RuntimeProductMode;
+  legacy_mode: RuntimeLegacyMode;
+  events_url: string;
+  event_replay_url: string;
+  plan_url: string;
+  decisions_url: string;
+  artifacts_url: string;
+  evidence_url: string;
+  score_snapshots_url: string;
+  approvals_url: string;
+};
+
+export type RuntimeRunCreateResponse = RuntimeRunLinks & {
+  run_id: string;
+  status: RuntimeRunStatus;
+  output_root: string;
+};
+
+export type RuntimeRunResponse = RuntimeRunSnapshot & RuntimeRunLinks & {
+  run_id: string;
+};
+
+export type RuntimeEventReplayResponse = {
+  run_id: string;
+  events: Idea2RepoEvent[];
+};
+
+export type RuntimeSseEvent = {
+  event: Idea2RepoEvent["type"];
+  data: Idea2RepoEvent;
+};
+
+export type StageControlRequest = {
+  reason?: string;
+  execute?: boolean;
+  allow_network?: boolean;
+  download_pdfs?: boolean;
+  max_papers?: number;
+};
+
+export type StageSkipRequest = {
+  reason: string;
+};
+
+export type StageControlResponse = StageControlResult;
+
+export type ApprovalResolutionRequest = {
+  decision: "approved" | "denied";
+  reason?: string;
+};
+
+export type ApprovalResolutionResponse = ApprovalRecord;
+
+export type RuntimeEvidenceResponse = {
+  run_id: string;
+  evidence: EvidenceItem[];
+  current: EvidenceItem[];
+};
+
+export type RuntimeScoreSnapshotsResponse = {
+  run_id: string;
+  score_snapshots: ScoreSnapshot[];
+};
+
+export type ArtifactProjectionKind = "reports" | "evidence" | "plans" | "paper" | "runtime" | "other";
+
+export type ArtifactProjection = {
+  kind: ArtifactProjectionKind;
+  path: string;
+  bytes: number;
+  text: boolean;
+};
+
+export type RuntimeArtifactsResponse = {
+  run_id?: string;
+  root: string;
+  artifacts: ArtifactProjection[];
+  projections: Record<ArtifactProjectionKind, ArtifactProjection[]>;
+  tree: Record<string, unknown>;
+};
+
+export type RuntimeStageControlPath = `/runs/${string}/stages/${ResearchStageId}/${"retry" | "skip"}`;
