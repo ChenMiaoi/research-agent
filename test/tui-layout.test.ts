@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { test } from "node:test";
-import { layoutForTerminal, pageBudgetForLayout, type TuiPageMode } from "../src/tui/App.js";
+import { directoryEnterAction, directoryPickerStartLabel, directoryPickerStartPath, isWindowsDriveRootPath, layoutForTerminal, pageBudgetForLayout, windowsDriveRootForPath, type TuiPageMode } from "../src/tui/App.js";
 
 test("TUI layout adapts to narrow and short terminals", () => {
   const tiny = layoutForTerminal(50, 18);
@@ -35,4 +36,28 @@ test("TUI page budget always fits in the terminal page", () => {
     assert.ok(budget.composerRows >= 3);
     if (mode === "directory") assert.ok(budget.composerRows <= 4);
   }
+});
+
+test("TUI directory picker starts from drives on Windows and home elsewhere", () => {
+  assert.equal(directoryPickerStartPath("win32"), "Windows drives");
+  assert.equal(directoryPickerStartLabel("win32"), "Drive start: Windows drives");
+  assert.equal(directoryPickerStartPath("linux"), homedir());
+  assert.match(directoryPickerStartLabel("darwin"), /^Home start: /);
+});
+
+test("TUI directory picker normalizes Windows drive roots", () => {
+  assert.equal(windowsDriveRootForPath("d:\\Code\\research"), "D:\\");
+  assert.equal(windowsDriveRootForPath("e:/workspace"), "E:\\");
+  assert.equal(windowsDriveRootForPath("F:"), "F:\\");
+  assert.equal(windowsDriveRootForPath("\\\\server\\share"), null);
+  assert.equal(isWindowsDriveRootPath("D:\\"), true);
+  assert.equal(isWindowsDriveRootPath("d:/"), true);
+  assert.equal(isWindowsDriveRootPath("D:\\Code"), false);
+});
+
+test("TUI directory picker opens folders on enter and selects only current folder", () => {
+  assert.equal(directoryEnterAction("drive"), "open");
+  assert.equal(directoryEnterAction("directory"), "open");
+  assert.equal(directoryEnterAction("parent"), "open");
+  assert.equal(directoryEnterAction("select-current"), "select");
 });

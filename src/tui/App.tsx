@@ -68,8 +68,11 @@ type ActiveSelect = {
   onSelect: (option: SelectOption) => Promise<void> | void;
 };
 
+type DirectoryPickerScope = "filesystem" | "drives";
+export type DirectoryOptionKind = "select-current" | "parent" | "directory" | "drive";
+
 type DirectoryOption = {
-  kind: "select-current" | "parent" | "directory";
+  kind: DirectoryOptionKind;
   label: string;
   path: string;
   description?: string;
@@ -77,7 +80,9 @@ type DirectoryOption = {
 
 type ActiveDirectoryPicker = {
   title: string;
+  scope: DirectoryPickerScope;
   cwd: string;
+  startLabel: string;
   options: DirectoryOption[];
   selectedIndex: number;
   loading: boolean;
@@ -147,6 +152,8 @@ const theme = {
 } as const;
 
 const LIMITS_REFRESH_INTERVAL_MS = 60_000;
+const WINDOWS_DRIVE_PICKER_CWD = "Windows drives";
+const WINDOWS_DRIVE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 export function App({ defaultOutput = "generated_repos/idea2repo-project" }: AppProps): React.ReactElement {
   const { exit } = useApp();
@@ -325,17 +332,24 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
         return;
       }
       if (key.leftArrow) {
-        void changeDirectory(dirname(activeDirectoryPicker.cwd));
+        if (activeDirectoryPicker.scope !== "drives") {
+          if (process.platform === "win32" && isWindowsDriveRootPath(activeDirectoryPicker.cwd)) void loadWindowsDrivePicker(activeDirectoryPicker.resolve, activeDirectoryPicker.cwd);
+          else void changeDirectory(dirname(activeDirectoryPicker.cwd));
+        }
         return;
       }
       if (key.rightArrow) {
         const option = activeDirectoryPicker.options[activeDirectoryPicker.selectedIndex];
-        if (option?.kind === "directory" || option?.kind === "parent") void changeDirectory(option.path);
+        if (option?.kind === "directory" || option?.kind === "parent" || option?.kind === "drive") void changeDirectory(option.path);
         return;
       }
       if (key.return) {
         const option = activeDirectoryPicker.options[activeDirectoryPicker.selectedIndex];
         if (!option) return;
+        if (directoryEnterAction(option.kind) === "open") {
+          void changeDirectory(option.path);
+          return;
+        }
         activeDirectoryPicker.resolve(option.path);
         setActiveDirectoryPicker(null);
         return;
@@ -1050,22 +1064,68 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
     setActiveSelect({ title, options, selectedIndex: 0, onSelect });
   }
 
-  async function promptForDirectoryParent(_currentOutput: string): Promise<string> {
-    const start = homedir();
+  async function promptForDirectoryParent(currentOutput: string): Promise<string> {
+    const start = directoryPickerStartPath();
     setActivePrompt(null);
     setActiveSelect(null);
     setActiveApprovalDialog(null);
     replaceInput("");
     return new Promise((resolveDirectory) => {
+      if (process.platform === "win32") {
+        void loadWindowsDrivePicker(resolveDirectory, currentOutput);
+        return;
+      }
       void loadDirectoryPicker(start, resolveDirectory);
     });
+  }
+
+  async function loadWindowsDrivePicker(resolveDirectory: (value: string) => void, currentOutput: string): Promise<void> {
+    const selectedDrive = windowsDriveRootForPath(resolve(currentOutput)) ?? windowsDriveRootForPath(homedir()) ?? windowsDriveRootForPath(process.cwd());
+    setActiveDirectoryPicker({
+      title: "Choose output drive",
+      scope: "drives",
+      cwd: WINDOWS_DRIVE_PICKER_CWD,
+      startLabel: directoryPickerStartLabel(),
+      options: [],
+      selectedIndex: 0,
+      loading: true,
+      resolve: resolveDirectory
+    });
+
+    let options: DirectoryOption[] = [];
+    let errorMessage: string | undefined;
+    try {
+      options = await windowsDriveOptions();
+    } catch (error) {
+      errorMessage = compactText(error instanceof Error ? error.message : String(error || "unknown error"), 100);
+    }
+    if (!options.length && selectedDrive) options = [driveOption(selectedDrive)];
+    if (!options.length) {
+      await loadDirectoryPicker(homedir(), resolveDirectory);
+      return;
+    }
+
+    const selectedIndex = Math.max(0, options.findIndex((option) => option.path.toLowerCase() === selectedDrive?.toLowerCase()));
+    setActiveDirectoryPicker((current) =>
+      current?.resolve === resolveDirectory
+        ? {
+            ...current,
+            options,
+            selectedIndex,
+            loading: false,
+            error: errorMessage
+          }
+        : current
+    );
   }
 
   async function loadDirectoryPicker(cwd: string, resolveDirectory: (value: string) => void, selectedIndex = 0): Promise<void> {
     const resolved = resolve(cwd);
     setActiveDirectoryPicker({
       title: "Choose output parent directory",
+      scope: "filesystem",
       cwd: resolved,
+      startLabel: directoryPickerStartLabel(),
       options: [],
       selectedIndex: 0,
       loading: true,
@@ -1639,10 +1699,10 @@ function DirectoryPickerPanel({ picker, height, layout }: { picker: ActiveDirect
   const push = (line: React.ReactElement): void => {
     if (lines.length < innerRows) lines.push(line);
   };
-  push(<SectionTitle key="directory-title" label="Directory Browser" />);
+  push(<SectionTitle key="directory-title" label={picker.title} />);
   push(
     <Text key="directory-root" color={theme.muted}>
-      {compactText(`Home start: ${homedir()}`, width)}
+      {compactText(picker.startLabel, width)}
     </Text>
   );
   push(
@@ -1923,7 +1983,11 @@ function ComposerPanel({
   };
 
   if (activeDirectoryPicker) {
-    push(<Text key="directory-help" color={theme.muted}>{compactText("Directory browser is open above. Enter selects parent; Right opens folder; Left goes up; Esc cancels.", width)}</Text>);
+    const help =
+      activeDirectoryPicker.scope === "drives"
+        ? "Choose a drive. Enter or Right opens it; Esc cancels."
+        : "Enter or Right opens folders; choose . to select the current folder; Left goes up; Esc cancels.";
+    push(<Text key="directory-help" color={theme.muted}>{compactText(help, width)}</Text>);
   } else if (activePrompt) {
     push(<Text key="prompt" bold color={theme.warning}>{compactText(activePrompt.message, width)}</Text>);
     push(
@@ -2135,7 +2199,7 @@ function optionLine(option: SelectOption, selected: boolean, width: number, inde
 }
 
 function directoryOptionLine(option: DirectoryOption, selected: boolean, width: number, index: number): React.ReactElement {
-  const marker = option.kind === "select-current" ? "[.]" : option.kind === "parent" ? "[..]" : "[dir]";
+  const marker = option.kind === "select-current" ? "[.]" : option.kind === "parent" ? "[..]" : option.kind === "drive" ? "[drv]" : "[dir]";
   const labelWidth = Math.max(8, width - marker.length - 6);
   const label = option.description ? `${option.label} - ${option.description}` : option.label;
   return (
@@ -2163,6 +2227,57 @@ function slashSuggestionLine(suggestion: ReturnType<typeof getSlashSuggestions>[
   );
 }
 
+export function directoryPickerStartPath(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? WINDOWS_DRIVE_PICKER_CWD : homedir();
+}
+
+export function directoryPickerStartLabel(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? `Drive start: ${WINDOWS_DRIVE_PICKER_CWD}` : `Home start: ${homedir()}`;
+}
+
+export function windowsDriveRootForPath(path: string | undefined): string | null {
+  if (!path) return null;
+  const drive = /^([a-zA-Z]):/.exec(path)?.[1];
+  return drive ? `${drive.toUpperCase()}:\\` : null;
+}
+
+export function isWindowsDriveRootPath(path: string): boolean {
+  const root = windowsDriveRootForPath(path);
+  return Boolean(root && trimWindowsTrailingSeparators(path).toLowerCase() === trimWindowsTrailingSeparators(root).toLowerCase());
+}
+
+export function directoryEnterAction(kind: DirectoryOptionKind): "open" | "select" {
+  return kind === "select-current" ? "select" : "open";
+}
+
+async function windowsDriveOptions(): Promise<DirectoryOption[]> {
+  const checks = await Promise.all(
+    windowsDriveCandidates().map(async (root) => {
+      const pathStat = await stat(root).catch(() => null);
+      return pathStat?.isDirectory() ? driveOption(root) : null;
+    })
+  );
+  return checks.filter((option): option is DirectoryOption => Boolean(option));
+}
+
+function windowsDriveCandidates(): string[] {
+  const candidates = new Set<string>();
+  for (const letter of WINDOWS_DRIVE_LETTERS) candidates.add(`${letter}:\\`);
+  for (const value of [process.env.SystemDrive, homedir(), process.cwd()]) {
+    const drive = windowsDriveRootForPath(value);
+    if (drive) candidates.add(drive);
+  }
+  return [...candidates].sort((left, right) => left.localeCompare(right));
+}
+
+function driveOption(root: string): DirectoryOption {
+  return { kind: "drive", label: root, path: root, description: "drive root" };
+}
+
+function trimWindowsTrailingSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, "");
+}
+
 async function directoryOptions(cwd: string): Promise<DirectoryOption[]> {
   const resolved = resolve(cwd);
   const parent = dirname(resolved);
@@ -2178,7 +2293,7 @@ async function directoryOptions(cwd: string): Promise<DirectoryOption[]> {
     })
     .slice(0, 200);
   return [
-    { kind: "select-current", label: ".", path: resolved, description: "use this folder as parent" },
+    { kind: "select-current", label: ".", path: resolved, description: "select current folder" },
     ...(parent !== resolved ? [{ kind: "parent" as const, label: "..", path: parent, description: "parent folder" }] : []),
     ...directories.map((name) => ({ kind: "directory" as const, label: name, path: join(resolved, name) }))
   ];
@@ -2188,7 +2303,7 @@ function directoryFallbackOptions(cwd: string): DirectoryOption[] {
   const resolved = resolve(cwd);
   const parent = dirname(resolved);
   return [
-    { kind: "select-current", label: ".", path: resolved, description: "use this folder as parent" },
+    { kind: "select-current", label: ".", path: resolved, description: "select current folder" },
     ...(parent !== resolved ? [{ kind: "parent" as const, label: "..", path: parent, description: "parent folder" }] : [])
   ];
 }
