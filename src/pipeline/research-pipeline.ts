@@ -35,7 +35,7 @@ import { paperCandidateToRecord, type LiteratureSearchOptions, type LiteratureSe
 import { diagnoseIdea } from "../scoring.js";
 import { exists } from "../state.js";
 import { evidenceRowsCsv, evidenceRowsMarkdown, evidenceText, extractEvidenceRows } from "../skills/analysis/evidence-extract.js";
-import { strictCcfAScore, strictScoreMarkdown } from "../skills/analysis/ccf-a-score.js";
+import { strictScoreMarkdown, type StrictScoreInput, type StrictScoreResult } from "../skills/analysis/ccf-a-score.js";
 import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from "../skills/analysis/idea-refine.js";
 import { assessNovelty, noveltyMatrixMarkdown } from "../skills/analysis/novelty-matrix.js";
 import { relatedWorkMatrixCsv, topicClustersMarkdown } from "../skills/analysis/related-work-matrix.js";
@@ -43,15 +43,14 @@ import type { LiteratureSource, PaperCandidate } from "../skills/literature/type
 import type { PdfChunkIndexEntry } from "../skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
 import { pdfChunksEqual, validateDownloadedPdfManifest } from "../skills/pdf/trust.js";
-import { anonymityMarkdown, checkTemplateComplianceArtifacts, complianceMarkdown } from "../skills/templates/compliance.js";
+import { anonymityMarkdown, complianceMarkdown } from "../skills/templates/compliance.js";
 import { createZipArchive, type ZipEntry } from "../skills/templates/package.js";
-import { resolveTemplateProfile, templateDecisionMarkdown } from "../skills/templates/resolve.js";
-import { renderPaper } from "../skills/templates/render.js";
-import type { TemplateResolveInput } from "../skills/templates/types.js";
+import { templateDecisionMarkdown } from "../skills/templates/resolve.js";
+import type { PaperRenderInput, PaperRenderResult, TemplateComplianceResult, TemplateResolveInput, TemplateResolveResult } from "../skills/templates/types.js";
 import { ApprovalRecorder, approvalPolicyForMode } from "../runtime/approvals.js";
 import { DecisionRecorder } from "../runtime/decisions.js";
 import { runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "../runtime/events.js";
-import { createCoreToolRegistry, createToolContext } from "../runtime/tools.js";
+import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolRegistry } from "../runtime/tools.js";
 import { CODEX_CLI_PROVIDER_ID, OFFLINE_PROVIDER_ID, apiShapeForProvider, canonicalProvider } from "../providers.js";
 import { createProviderAdapter } from "../providers/index.js";
 import type { ProviderAdapter } from "../providers/adapter.js";
@@ -461,7 +460,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
 
   const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
   const evidence = evidenceText(evidenceRows);
-  const score = await toolRegistry.execute<Parameters<typeof strictCcfAScore>[0], ReturnType<typeof strictCcfAScore>>("score.ccf_a_strict", {
+  const score = await toolRegistry.execute<StrictScoreInput, StrictScoreResult>("ccf_a.score", {
     verifiedRelatedWorkCount: verifiedPaperCount,
     pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
     corePaperCount: verifiedPaperCount,
@@ -582,7 +581,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       venue: options.venue ?? venues[0],
       domain: route.domain.key,
       strict: Boolean(options.strictCcfA)
-    });
+    }, toolRegistry, toolContext);
     await recordDecision({
       stage_id: "venue_template_packaging",
       title: "Venue template package selected",
@@ -706,7 +705,7 @@ function pipelineArtifacts(input: {
   evidenceRows: ReturnType<typeof extractEvidenceRows>;
   noteArtifacts: Record<string, string>;
   novelty: ReturnType<typeof assessNovelty>;
-  score: ReturnType<typeof strictCcfAScore>;
+  score: StrictScoreResult;
   searchReport: string;
   baselineRecommendations: string[];
   datasetRecommendations: string[];
@@ -1139,10 +1138,14 @@ async function readPaperNotesWithAgent(
   return notes;
 }
 
-async function templatePackageArtifacts(input: { idea: string; projectName: string; venue?: string; domain?: string; strict?: boolean }): Promise<PipelineTemplatePackage> {
+async function templatePackageArtifacts(
+  input: { idea: string; projectName: string; venue?: string; domain?: string; strict?: boolean },
+  toolRegistry: ToolRegistry,
+  toolContext: ToolContext
+): Promise<PipelineTemplatePackage> {
   const resolveInput: TemplateResolveInput = { venue: input.venue, domain: input.domain, mode: "review" };
-  const resolved = await resolveTemplateProfile(resolveInput);
-  const rendered = renderPaper({
+  const resolved = await toolRegistry.execute<TemplateResolveInput, TemplateResolveResult>("template.resolve", resolveInput, toolContext);
+  const renderInput: PaperRenderInput = {
     profile: resolved.profile,
     projectName: input.projectName,
     title: titleFromIdea(input.idea),
@@ -1150,7 +1153,8 @@ async function templatePackageArtifacts(input: { idea: string; projectName: stri
     reviewMode: resolved.profile.default_review_mode,
     bibFile: "references.bib",
     macrosFile: "macros.tex"
-  });
+  };
+  const rendered = await toolRegistry.execute<PaperRenderInput, PaperRenderResult>("template.render", renderInput, toolContext);
   const files: Record<string, string> = {
     ...rendered.files,
     "docs/submission/target_venue.md": `# Target Venue\n\n${input.venue ?? resolved.profile.venue_name}\n`,
@@ -1159,11 +1163,12 @@ async function templatePackageArtifacts(input: { idea: string; projectName: stri
     "docs/submission/submission_checklist.md": `# Submission Checklist\n\n- [x] Template profile selected: ${resolved.profile.profile_id}\n- [ ] Official CFP and style files verified for target year\n- [x] Anonymous mode checked\n- [x] Static compliance checked\n`,
     "docs/submission/camera_ready_todo.md": "# Camera Ready TODO\n\nPrepare author blocks, artifact links, rights blocks, and final venue metadata after acceptance.\n"
   };
-  const compliance = checkTemplateComplianceArtifacts(files, {
+  const compliance = await toolRegistry.execute<{ profile: TemplateResolveResult["profile"]; anonymous: boolean; strict?: boolean; artifacts: Record<string, string> }, TemplateComplianceResult>("template.check", {
     profile: resolved.profile,
     anonymous: resolved.profile.default_review_mode === "anonymous",
-    strict: input.strict
-  });
+    strict: input.strict,
+    artifacts: files
+  }, toolContext);
   files["docs/submission/template_compliance_report.md"] = complianceMarkdown(compliance);
   files["docs/submission/anonymity_check.md"] = anonymityMarkdown(compliance);
   files["paper/submission/overleaf.zip"] = zipArtifactString(createZipArchive(overleafZipEntries(files)));

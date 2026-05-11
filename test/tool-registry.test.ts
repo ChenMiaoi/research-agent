@@ -8,6 +8,13 @@ import { ApprovalRecorder, ApprovalRequiredError, approvalPolicyForMode, readApp
 import { EventBus, type Idea2RepoEvent } from "../src/runtime/events.js";
 import { createCoreToolRegistry, createToolContext, readToolCallRecords } from "../src/runtime/tools.js";
 
+test("core tool registry exposes plan-required tool names", () => {
+  const names = createCoreToolRegistry().list().map((tool) => tool.name);
+  for (const toolName of ["ccf_a.score", "template.resolve", "template.render", "template.check"]) {
+    assert.ok(names.includes(toolName), `missing ${toolName}`);
+  }
+});
+
 test("core tool registry logs artifact calls and emits runtime events", async () => {
   const root = await mkdtemp(join(tmpdir(), "idea2repo-tools-"));
   const events: Idea2RepoEvent[] = [];
@@ -98,7 +105,7 @@ test("research generation adopts package helper artifacts into tool records", as
       jsonlEvents: true
     });
     const calls = await readToolCallRecords(output);
-    for (const toolName of ["literature.search", "pdf.acquire", "pdf.chunk", "evidence.extract", "score.ccf_a_strict"]) {
+    for (const toolName of ["literature.search", "pdf.acquire", "pdf.chunk", "evidence.extract", "ccf_a.score", "template.resolve", "template.render", "template.check"]) {
       assert.ok(calls.some((record) => record.tool_name === toolName && record.status === "completed"), `missing completed ${toolName}`);
     }
     assert.ok(calls.some((record) => record.tool_name === "artifact.adopt" && /paper\/submission\/overleaf.zip/.test(record.input_summary)));

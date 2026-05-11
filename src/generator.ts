@@ -30,12 +30,11 @@ import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolR
 import { restoreRuntimeState, type RuntimeStateRestoreResult } from "./runtime/runs.js";
 import { writeResearchPipelineState } from "./pipeline/stage-state.js";
 import { researchStages, type ResearchStageId } from "./pipeline/stages.js";
-import { resolveTemplateProfile, templateDecisionMarkdown } from "./skills/templates/resolve.js";
-import { renderPaper } from "./skills/templates/render.js";
-import { anonymityMarkdown, checkTemplateCompliance, complianceMarkdown } from "./skills/templates/compliance.js";
+import { templateDecisionMarkdown } from "./skills/templates/resolve.js";
+import { anonymityMarkdown, complianceMarkdown } from "./skills/templates/compliance.js";
 import { compilePaper as compileRenderedPaper } from "./skills/templates/compile.js";
 import { packagePaper } from "./skills/templates/package.js";
-import type { ReviewMode, TemplateResolveInput, VenueTemplateProfile } from "./skills/templates/types.js";
+import type { PaperRenderInput, PaperRenderResult, ReviewMode, TemplateComplianceResult, TemplateResolveInput, TemplateResolveResult, VenueTemplateProfile } from "./skills/templates/types.js";
 
 export type Stack = "python" | "ts";
 
@@ -240,7 +239,9 @@ export async function generateResearchRepo(idea: string, output: string, options
     projectName,
     diagnosis,
     verifiedPapers,
-    options
+    options,
+    toolRegistry,
+    toolContext
   });
   if (templateArtifacts) {
     Object.assign(fileMap, templateArtifacts.files);
@@ -260,11 +261,11 @@ export async function generateResearchRepo(idea: string, output: string, options
     written.push(join(root, ".idea2repo", "research_pipeline_state.json"));
   }
   if (templateArtifacts) {
-    const compliance = await checkTemplateCompliance(root, {
+    const compliance = await toolRegistry.execute<{ profile: VenueTemplateProfile; anonymous: boolean; strict?: boolean }, TemplateComplianceResult>("template.check", {
       profile: templateArtifacts.profile,
       anonymous: templateArtifacts.reviewMode === "anonymous",
       strict: options.strictCcfA
-    });
+    }, toolContext);
     const compliancePath = ensureChild(root, "docs/submission/template_compliance_report.md");
     await writeGeneratedArtifact(toolRegistry, toolContext, "docs/submission/template_compliance_report.md", complianceMarkdown(compliance));
     written.push(compliancePath);
@@ -602,6 +603,8 @@ async function buildGeneratedTemplateArtifacts(options: {
   diagnosis: Diagnosis;
   verifiedPapers: PaperRecord[];
   options: GenerateOptions;
+  toolRegistry: ToolRegistry;
+  toolContext: ToolContext;
 }): Promise<GeneratedTemplateArtifacts | null> {
   if (!(options.options.runResearchPipeline || options.options.venue || options.options.template || options.options.compilePaper || options.options.packageOverleaf)) return null;
   const route = options.diagnosis.routes[0]!;
@@ -613,9 +616,9 @@ async function buildGeneratedTemplateArtifacts(options: {
     mode: normalizeTemplateResolveMode(options.options.reviewMode),
     paperType: options.options.paperType
   };
-  const resolved = await resolveTemplateProfile(input);
+  const resolved = await options.toolRegistry.execute<TemplateResolveInput, TemplateResolveResult>("template.resolve", input, options.toolContext);
   const reviewMode = normalizeReviewMode(options.options.reviewMode, resolved.profile.default_review_mode);
-  const rendered = renderPaper({
+  const renderInput: PaperRenderInput = {
     profile: resolved.profile,
     projectName: options.projectName,
     title: titleFromProjectName(options.projectName),
@@ -623,7 +626,8 @@ async function buildGeneratedTemplateArtifacts(options: {
     reviewMode,
     bibFile: "references.bib",
     macrosFile: "macros.tex"
-  });
+  };
+  const rendered = await options.toolRegistry.execute<PaperRenderInput, PaperRenderResult>("template.render", renderInput, options.toolContext);
   rendered.files["paper/references.bib"] = referencesBib(options.verifiedPapers);
   return {
     profile: resolved.profile,

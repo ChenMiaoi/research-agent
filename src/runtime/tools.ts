@@ -9,6 +9,10 @@ import { acquirePdfs, type PdfAcquireOptions } from "../skills/pdf/acquire.js";
 import { buildPdfChunkIndex, type PdfChunkIndexEntry } from "../skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
 import type { PaperCandidate } from "../skills/literature/types.js";
+import { checkTemplateCompliance, checkTemplateComplianceArtifacts } from "../skills/templates/compliance.js";
+import { resolveTemplateProfile } from "../skills/templates/resolve.js";
+import { renderPaper } from "../skills/templates/render.js";
+import type { PaperRenderInput, PaperRenderResult, TemplateComplianceResult, TemplateResolveInput, TemplateResolveResult, VenueTemplateProfile } from "../skills/templates/types.js";
 import { ensureChild, exists } from "../state.js";
 import { refreshManifestArtifactHashes, snapshotArtifact } from "./artifacts.js";
 import { DecisionRecorder, type DecisionInput } from "./decisions.js";
@@ -265,13 +269,46 @@ export function createCoreToolRegistry(): ToolRegistry {
   });
 
   registry.register<StrictScoreInput, StrictScoreResult>({
-    name: "score.ccf_a_strict",
+    name: "ccf_a.score",
     description: "Apply strict CCF-A readiness scoring caps.",
     risk: ["read"],
     inputSchema: { type: "object" },
     summarizeInput: (input) => `verified_related_work=${input.verifiedRelatedWorkCount ?? 0}; pdf_read=${input.pdfReadCount ?? 0}; collision=${Boolean(input.highPriorWorkCollision)}`,
     summarizeOutput: (output) => `strict_score=${output.total}; caps=${output.caps.length}`,
     handler: (input) => Promise.resolve(strictCcfAScore(input))
+  });
+
+  registry.register<TemplateResolveInput, TemplateResolveResult>({
+    name: "template.resolve",
+    description: "Resolve the venue-aware paper template profile.",
+    risk: ["read"],
+    inputSchema: { type: "object", properties: { venue: { type: "string" }, domain: { type: "string" }, family: { type: "string" }, year: { type: "number" }, mode: { type: "string" }, paperType: { type: "string" } } },
+    summarizeInput: (input) => `venue=${input.venue ?? "auto"}; domain=${input.domain ?? "auto"}; family=${input.family ?? "auto"}`,
+    summarizeOutput: (output) => `profile=${output.profile.profile_id}; confidence=${output.confidence}`,
+    handler: (input) => resolveTemplateProfile(input)
+  });
+
+  registry.register<PaperRenderInput, PaperRenderResult>({
+    name: "template.render",
+    description: "Render a paper scaffold from a resolved template profile.",
+    risk: ["write"],
+    inputSchema: { type: "object", required: ["profile", "projectName", "title", "anonymous"], properties: { profile: { type: "object" }, projectName: { type: "string" }, title: { type: "string" }, anonymous: { type: "boolean" }, reviewMode: { type: "string" } } },
+    summarizeInput: (input) => `profile=${input.profile.profile_id}; review_mode=${input.reviewMode ?? (input.anonymous ? "anonymous" : "non_anonymous")}`,
+    summarizeOutput: (output) => `rendered_files=${Object.keys(output.files).length}; warnings=${output.warnings.length}`,
+    handler: (input) => Promise.resolve(renderPaper(input))
+  });
+
+  registry.register<TemplateCheckInput, TemplateComplianceResult>({
+    name: "template.check",
+    description: "Run static paper template and anonymity compliance checks.",
+    risk: (input) => (input.artifacts ? ["read"] : ["read", "write-state"]),
+    inputSchema: { type: "object", required: ["profile"], properties: { profile: { type: "object" }, anonymous: { type: "boolean" }, strict: { type: "boolean" }, artifacts: { type: "object" } } },
+    summarizeInput: (input) => `profile=${input.profile.profile_id}; anonymous=${Boolean(input.anonymous)}; artifacts=${input.artifacts ? Object.keys(input.artifacts).length : "filesystem"}`,
+    summarizeOutput: (output) => `status=${output.status}; errors=${output.errors.length}; warnings=${output.warnings.length}`,
+    handler: (input, ctx) =>
+      input.artifacts
+        ? Promise.resolve(checkTemplateComplianceArtifacts(input.artifacts, input))
+        : checkTemplateCompliance(ctx.outputRoot, input)
   });
 
   registry.register<{ repoName?: string; createIssues?: boolean }, Awaited<ReturnType<typeof buildGithubExportPlan>>>({
@@ -341,6 +378,13 @@ export type ArtifactAdoptInput = ArtifactWriteOutput;
 
 export type PdfAcquireToolInput = PdfAcquireOptions & {
   candidates: PaperCandidate[];
+};
+
+export type TemplateCheckInput = {
+  profile: VenueTemplateProfile;
+  anonymous?: boolean;
+  strict?: boolean;
+  artifacts?: Record<string, string>;
 };
 
 function approvalRisks(risk: ToolRisk[]): ApprovalRisk[] {
