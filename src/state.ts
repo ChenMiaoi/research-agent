@@ -125,6 +125,11 @@ export async function writeText(path: string, content: string): Promise<void> {
   await writeFile(path, content, { encoding: "utf8" });
 }
 
+export async function writeBinary(path: string, content: Buffer): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content);
+}
+
 export async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);

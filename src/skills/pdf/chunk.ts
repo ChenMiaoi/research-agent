@@ -33,8 +33,12 @@ export async function buildPdfChunkIndex(root: string, manifest: PdfManifestReco
   const entries: PdfChunkIndexEntry[] = [];
   for (const record of manifest) {
     if (record.status !== "downloaded" || !record.pdf_path) continue;
-    const parsed = await parsePdf(join(root, record.pdf_path));
-    entries.push(...chunkPdf(parsed).map((chunk) => ({ ...chunk, paper_id: record.paper_id })));
+    try {
+      const parsed = await parsePdf(join(root, record.pdf_path));
+      entries.push(...chunkPdf(parsed).map((chunk) => ({ ...chunk, paper_id: record.paper_id })));
+    } catch {
+      continue;
+    }
   }
   return entries;
 }

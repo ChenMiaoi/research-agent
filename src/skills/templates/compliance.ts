@@ -32,6 +32,36 @@ export async function checkTemplateCompliance(
   };
 }
 
+export function checkTemplateComplianceArtifacts(
+  files: Record<string, string>,
+  options: { profile: VenueTemplateProfile; anonymous?: boolean; strict?: boolean }
+): TemplateComplianceResult {
+  const checks: TemplateComplianceCheck[] = [];
+  const profile = options.profile;
+  requireFileInArtifacts(files, "paper/main.tex", checks);
+  requireFileInArtifacts(files, "paper/references.bib", checks);
+  for (const file of profile.required_files) requireFileInArtifacts(files, file, checks);
+  if (profile.paper_rules.checklist_required) requireFileInArtifacts(files, "paper/checklist/reproducibility_checklist.tex", checks, "required checklist is missing");
+
+  const main = files["paper/main.tex"] ?? "";
+  const allPaperText = collectPaperTextFromArtifacts(files);
+  checkBibliographyStyle(main, profile, checks);
+  const anonymous = Boolean(options.anonymous ?? profile.paper_rules.anonymity_required);
+  checkAnonymous(allPaperText, anonymous, checks);
+  checkForbiddenPatterns(allPaperText, profile, checks, anonymous);
+  checkSectionStructureArtifacts(files, checks);
+
+  const errors = checks.filter((check) => check.status === "failed").map((check) => check.message);
+  const warnings = checks.filter((check) => check.status === "warning").map((check) => check.message);
+  if (options.strict && warnings.length) errors.push(...warnings);
+  return {
+    status: errors.length ? "failed" : "passed",
+    checks,
+    errors,
+    warnings
+  };
+}
+
 export function complianceMarkdown(result: TemplateComplianceResult): string {
   return `# Template Compliance Report
 
@@ -57,6 +87,15 @@ ${anonymityChecks.length ? anonymityChecks.map((check) => `- ${check.status.toUp
 
 async function requireFile(root: string, relativePath: string, checks: TemplateComplianceCheck[], failureMessage?: string): Promise<void> {
   const exists = await fileExists(join(root, relativePath));
+  checks.push({
+    id: `file:${relativePath}`,
+    status: exists ? "passed" : "failed",
+    message: exists ? `${relativePath} exists` : (failureMessage ?? `${relativePath} is missing`)
+  });
+}
+
+function requireFileInArtifacts(files: Record<string, string>, relativePath: string, checks: TemplateComplianceCheck[], failureMessage?: string): void {
+  const exists = Object.hasOwn(files, relativePath);
   checks.push({
     id: `file:${relativePath}`,
     status: exists ? "passed" : "failed",
@@ -123,6 +162,25 @@ async function checkSectionStructure(root: string, checks: TemplateComplianceChe
   }
 }
 
+function checkSectionStructureArtifacts(files: Record<string, string>, checks: TemplateComplianceCheck[]): void {
+  const required = [
+    "paper/sections/00_abstract.tex",
+    "paper/sections/01_introduction.tex",
+    "paper/sections/02_related_work.tex",
+    "paper/sections/03_method.tex",
+    "paper/sections/04_experiments.tex",
+    "paper/sections/08_conclusion.tex"
+  ];
+  for (const file of required) {
+    const exists = Object.hasOwn(files, file);
+    checks.push({
+      id: `section:${file}`,
+      status: exists ? "passed" : "warning",
+      message: exists ? `${file} exists` : `${file} missing from expected section structure`
+    });
+  }
+}
+
 async function collectPaperText(root: string): Promise<string> {
   const paths = [
     "paper/main.tex",
@@ -141,6 +199,25 @@ async function collectPaperText(root: string): Promise<string> {
   ];
   const parts = await Promise.all(paths.map((path) => readTextIfExists(join(root, path))));
   return parts.join("\n");
+}
+
+function collectPaperTextFromArtifacts(files: Record<string, string>): string {
+  const paths = [
+    "paper/main.tex",
+    "paper/macros.tex",
+    "paper/sections/00_abstract.tex",
+    "paper/sections/01_introduction.tex",
+    "paper/sections/02_related_work.tex",
+    "paper/sections/03_method.tex",
+    "paper/sections/04_experiments.tex",
+    "paper/sections/05_results.tex",
+    "paper/sections/06_discussion.tex",
+    "paper/sections/07_limitations.tex",
+    "paper/sections/08_conclusion.tex",
+    "paper/appendix/appendix.tex",
+    "paper/checklist/reproducibility_checklist.tex"
+  ];
+  return paths.map((path) => files[path] ?? "").join("\n");
 }
 
 async function readTextIfExists(path: string): Promise<string> {

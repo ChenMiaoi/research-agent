@@ -2,9 +2,9 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type { PaperPackageResult } from "./types.js";
 
-type ZipEntry = {
+export type ZipEntry = {
   path: string;
-  data: Buffer;
+  data: Buffer | string;
 };
 
 export async function packagePaper(root: string, options: { forOverleaf?: boolean } = {}): Promise<PaperPackageResult> {
@@ -54,12 +54,17 @@ async function collect(current: string, root: string, prefix: string, include: (
 
 async function writeZip(path: string, entries: ZipEntry[]): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, createZipArchive(entries));
+}
+
+export function createZipArchive(entries: ZipEntry[]): Buffer {
   const chunks: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
   for (const entry of entries) {
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, "utf8");
     const name = Buffer.from(entry.path, "utf8");
-    const crc = crc32(entry.data);
+    const crc = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -68,11 +73,11 @@ async function writeZip(path: string, entries: ZipEntry[]): Promise<void> {
     local.writeUInt16LE(0, 10);
     local.writeUInt16LE(0, 12);
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(entry.data.length, 18);
-    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
     local.writeUInt16LE(name.length, 26);
     local.writeUInt16LE(0, 28);
-    chunks.push(local, name, entry.data);
+    chunks.push(local, name, data);
 
     const centralEntry = Buffer.alloc(46);
     centralEntry.writeUInt32LE(0x02014b50, 0);
@@ -83,8 +88,8 @@ async function writeZip(path: string, entries: ZipEntry[]): Promise<void> {
     centralEntry.writeUInt16LE(0, 12);
     centralEntry.writeUInt16LE(0, 14);
     centralEntry.writeUInt32LE(crc, 16);
-    centralEntry.writeUInt32LE(entry.data.length, 20);
-    centralEntry.writeUInt32LE(entry.data.length, 24);
+    centralEntry.writeUInt32LE(data.length, 20);
+    centralEntry.writeUInt32LE(data.length, 24);
     centralEntry.writeUInt16LE(name.length, 28);
     centralEntry.writeUInt16LE(0, 30);
     centralEntry.writeUInt16LE(0, 32);
@@ -93,7 +98,7 @@ async function writeZip(path: string, entries: ZipEntry[]): Promise<void> {
     centralEntry.writeUInt32LE(0, 38);
     centralEntry.writeUInt32LE(offset, 42);
     central.push(centralEntry, name);
-    offset += local.length + name.length + entry.data.length;
+    offset += local.length + name.length + data.length;
   }
   const centralOffset = offset;
   const centralSize = central.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -106,7 +111,7 @@ async function writeZip(path: string, entries: ZipEntry[]): Promise<void> {
   end.writeUInt32LE(centralSize, 12);
   end.writeUInt32LE(centralOffset, 16);
   end.writeUInt16LE(0, 20);
-  await writeFile(path, Buffer.concat([...chunks, ...central, end]));
+  return Buffer.concat([...chunks, ...central, end]);
 }
 
 function crc32(buffer: Buffer): number {

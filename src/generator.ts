@@ -16,7 +16,7 @@ import {
 } from "./providers.js";
 import { diagnoseIdea, type Diagnosis } from "./scoring.js";
 import { safeSecurityReframe, securityGuardrailMarkdown } from "./security.js";
-import { appendRunLog, ensureChild, exists, readManifest, RUN_LOG_PATH, writeManifest, writeText } from "./state.js";
+import { appendRunLog, ensureChild, exists, readManifest, RUN_LOG_PATH, writeBinary, writeManifest, writeText } from "./state.js";
 import type { ProjectManifest, ResearchAnalysis } from "./types.js";
 import { inspectWorkspace } from "./workspace.js";
 import { runWorkflow, workflowSummary } from "./workflow.js";
@@ -129,12 +129,14 @@ export async function generateResearchRepo(idea: string, output: string, options
         progress: options.progressCallback
       })
     : null;
-  const providerAnalysis = await analyzeWithProvider(idea, {
-    ...options,
-    timelineWeeks,
-    resources: options.resources ?? [],
-    stack
-  });
+  const providerAnalysis = options.runResearchPipeline
+    ? providerAnalysisFromPipeline(options, pipeline)
+    : await analyzeWithProvider(idea, {
+        ...options,
+        timelineWeeks,
+        resources: options.resources ?? [],
+        stack
+      });
   const analysis = providerAnalysis.analysis;
   const pipelineQueries = pipeline ? searchPlanQueries(pipeline) : undefined;
   const literatureTasks = options.literatureTasks ?? pipelineQueries ?? analysis?.related_work_queries ?? [];
@@ -201,7 +203,7 @@ export async function generateResearchRepo(idea: string, output: string, options
   options.progressCallback?.("Artifacts: writing repository scaffold");
   for (const [relativePath, content] of Object.entries(fileMap)) {
     const path = ensureChild(root, relativePath);
-    await writeText(path, ensureTrailingNewline(content));
+    await writeGeneratedArtifact(path, relativePath, content);
     written.push(path);
   }
   if (pipeline) {
@@ -286,6 +288,14 @@ export async function generateResearchRepo(idea: string, output: string, options
   };
 }
 
+async function writeGeneratedArtifact(path: string, relativePath: string, content: string): Promise<void> {
+  if (relativePath.endsWith(".zip")) {
+    await writeBinary(path, Buffer.from(content, "latin1"));
+    return;
+  }
+  await writeText(path, ensureTrailingNewline(content));
+}
+
 export async function resumeResearchRepo(output: string, options: { force?: boolean; permissionPolicy?: PermissionPolicy } = {}): Promise<GeneratedProject> {
   const root = resolve(output);
   const policy = options.permissionPolicy ?? defaultPolicy({ allowOverwrite: options.force });
@@ -346,6 +356,16 @@ async function analyzeWithProvider(
       fallbackReason: error instanceof Error ? error.message : "unknown provider failure"
     };
   }
+}
+
+function providerAnalysisFromPipeline(options: GenerateOptions, pipeline: ResearchPipelineResult | null): ProviderAnalysis {
+  const selectedProvider = canonicalProvider(options.provider, Boolean(options.offline));
+  const selectedApiShape = apiShapeForProvider(selectedProvider);
+  const fallbackReason =
+    selectedProvider === OFFLINE_PROVIDER_ID
+      ? "offline mode requested"
+      : pipeline?.warnings.find((warning) => warning.includes("Staged agent")) ?? "research pipeline used staged agents with deterministic fallbacks where needed";
+  return { analysis: null, selectedProvider, selectedApiShape, fallbackReason };
 }
 
 function diagnosisFromAnalysis(diagnosis: Diagnosis, analysis: ResearchAnalysis): Diagnosis {

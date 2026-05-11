@@ -73,7 +73,7 @@ export const researchStages: ResearchStageDefinition[] = [
     label: "PDF reading",
     prompt: "03_pdf_paper_reader.md",
     deterministic: false,
-    artifactPaths: ["docs/reference/paper_notes/README.md"]
+    artifactPaths: ["docs/reference/paper_notes/README.md", "docs/reference/pdf_chunks.json"]
   },
   {
     id: "related_work_analysis",
@@ -113,7 +113,12 @@ export const researchStages: ResearchStageDefinition[] = [
     label: "Better idea synthesis",
     prompt: "08_research_strategist.md",
     deterministic: false,
-    artifactPaths: ["docs/proposal/revised_idea.md", "docs/proposal/experiment_plan.md"]
+    artifactPaths: [
+      "docs/proposal/revised_idea.md",
+      "docs/proposal/experiment_plan.md",
+      "docs/proposal/first_4_week_plan.md",
+      "docs/proposal/paper_story.md"
+    ]
   },
   {
     id: "artifact_writing",
@@ -141,9 +146,23 @@ export const researchStages: ResearchStageDefinition[] = [
       "paper/main.tex",
       "paper/macros.tex",
       "paper/references.bib",
+      "paper/sections/00_abstract.tex",
+      "paper/sections/01_introduction.tex",
+      "paper/sections/02_related_work.tex",
+      "paper/sections/03_method.tex",
+      "paper/sections/04_experiments.tex",
+      "paper/sections/05_results.tex",
+      "paper/sections/06_discussion.tex",
+      "paper/sections/07_limitations.tex",
+      "paper/sections/08_conclusion.tex",
+      "paper/appendix/appendix.tex",
+      "paper/checklist/reproducibility_checklist.tex",
       "paper/template/profile.json",
+      "paper/template/render_config.json",
+      "paper/template/README.md",
       "paper/build/compile.log",
-      "paper/submission/overleaf.zip"
+      "paper/submission/overleaf.zip",
+      "paper/submission/submission.zip"
     ]
   }
 ];
