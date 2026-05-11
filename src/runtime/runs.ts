@@ -261,7 +261,7 @@ export async function retryRuntimeStage(
     confidence: "medium"
   });
   if (options.execute) {
-    await executeRetry(resolvedRoot, runId, events, options);
+    await executeRetry(resolvedRoot, runId, events, { ...options, stageId: stage.id });
   }
   return { root: resolvedRoot, run_id: runId, stage_id: stage.id, action: "retry", executed: Boolean(options.execute), snapshots };
 }
@@ -270,7 +270,7 @@ async function executeRetry(
   root: string,
   runId: string,
   events: EventSink,
-  options: { allowNetwork?: boolean; downloadPdfs?: boolean; maxPapers?: number }
+  options: { stageId: ResearchStageId; allowNetwork?: boolean; downloadPdfs?: boolean; maxPapers?: number }
 ): Promise<void> {
   const state = await readOrCreatePipelineState(root);
   const manifest = await readManifest(root);
@@ -286,7 +286,8 @@ async function executeRetry(
     resources: manifest.request.resources,
     stack: manifest.request.stack,
     runId,
-    events: pipelineEvents
+    events: pipelineEvents,
+    stageOverrides: { retryFromStage: options.stageId }
   });
   const written: string[] = [];
   for (const [relativePath, content] of Object.entries(result.artifacts)) {

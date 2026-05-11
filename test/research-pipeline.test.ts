@@ -236,6 +236,65 @@ test("research pipeline repairs underspecified staged search plans", async () =>
   assert.match(result.warnings.join("\n"), /Search planning gate repaired/);
 });
 
+test("research pipeline stage overrides force rerun and skip scheduled stages", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-stage-overrides-"));
+  const idea = "Build an LLM agent benchmark.";
+  try {
+    const ideaBrief = sampleIdeaBrief();
+    await writeArtifact(root, "docs/idea/idea_brief.md", `# Idea Brief\n\n${JSON.stringify(ideaBrief, null, 2)}\n`);
+    await writeArtifact(root, "docs/idea/assumptions.md", "# Assumptions\n\n- override test\n");
+    await writeArtifact(root, "docs/relative_work/search_plan.json", JSON.stringify(sampleSearchPlan(), null, 2) + "\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "idea_intake", "completed");
+    state = markStage(state, "search_planning", "completed");
+    await writeResearchPipelineState(root, state);
+
+    const calls: string[] = [];
+    const events: Array<{ type: string; stage_id?: string; reason?: string }> = [];
+    const agent = {
+      ...noEvidenceAgent(calls),
+      planLiteratureSearch: async () => {
+        calls.push("planLiteratureSearch");
+        return withAgentMeta({
+          search_plan: {
+            ...sampleSearchPlan(),
+            precision_queries: [{ query: "forced rerun precision", source_hints: ["openalex"], purpose: "override test" }, ...sampleSearchPlan().precision_queries.slice(1)]
+          }
+        });
+      },
+      reviewFeasibility: async () => {
+        calls.push("reviewFeasibility");
+        throw new Error("feasibility should be skipped by stage override");
+      }
+    };
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "openai-codex",
+      agentClient: agent,
+      strictCcfA: true,
+      events: {
+        emit: (event) => {
+          events.push(event);
+        }
+      },
+      stageOverrides: {
+        fromStage: "search_planning",
+        skipStages: { feasibility_review: "Operator accepted existing feasibility assessment." }
+      }
+    });
+
+    assert.equal(calls.includes("planLiteratureSearch"), true);
+    assert.equal(result.searchPlan.precision_queries[0]?.query, "forced rerun precision");
+    assert.equal(calls.includes("reviewFeasibility"), false);
+    assert.equal(result.state.stages.find((stage) => stage.id === "feasibility_review")?.status, "skipped");
+    assert.match(result.state.stages.find((stage) => stage.id === "feasibility_review")?.error ?? "", /existing feasibility/);
+    assert.ok(events.some((event) => event.type === "stage.started" && event.stage_id === "search_planning"));
+    assert.ok(events.some((event) => event.type === "stage.skipped" && event.stage_id === "feasibility_review" && /existing feasibility/.test(event.reason ?? "")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("research pipeline blocks candidate triage until eight core candidates exist", async () => {
   const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-triage-gate-"));
   const idea = "Build an LLM agent benchmark.";

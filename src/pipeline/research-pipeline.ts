@@ -56,7 +56,7 @@ import { CODEX_CLI_PROVIDER_ID, OFFLINE_PROVIDER_ID, apiShapeForProvider, canoni
 import { createProviderAdapter } from "../providers/index.js";
 import type { ProviderAdapter } from "../providers/adapter.js";
 import { createResearchPipelineState, markStage, readResearchPipelineState, writeResearchPipelineState, type ResearchPipelineState } from "./stage-state.js";
-import { researchStages } from "./stages.js";
+import { researchStages, stageDefinition, type ResearchStageId } from "./stages.js";
 
 export type StagedResearchAgent = Pick<
   CodexOAuthClient,
@@ -87,6 +87,13 @@ export type ResearchPipelineOptions = {
   runId?: string;
   signal?: AbortSignal;
   progress?: (message: string) => void;
+  stageOverrides?: ResearchPipelineStageOverrides;
+};
+
+export type ResearchPipelineStageOverrides = {
+  fromStage?: ResearchStageId;
+  retryFromStage?: ResearchStageId;
+  skipStages?: Partial<Record<ResearchStageId, string>>;
 };
 
 export type ResearchPipelineResult = {
@@ -127,6 +134,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   const restoredState = options.outputRoot ? await readResearchPipelineState(outputRoot) : null;
   if (restoredState && restoredState.idea !== idea) throw new Error(`research pipeline state belongs to a different idea: ${restoredState.idea}`);
   let state = restoredState ?? createResearchPipelineState(idea, options.outputRoot);
+  const forcedFromStage = options.stageOverrides?.fromStage ?? options.stageOverrides?.retryFromStage;
+  const forcedFromIndex = forcedFromStage ? stageDefinition(forcedFromStage).index : null;
+  const isForcedStage = (id: ResearchStageId): boolean => forcedFromIndex !== null && stageDefinition(id).index >= forcedFromIndex;
+  const skippedByOverride = new Set<ResearchStageId>();
   const warnings: string[] = [];
   const decisionSummaries: string[] = [];
   const resumedArtifacts: Record<string, string> = {};
@@ -144,6 +155,8 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   };
   const canResumeStage = async (id: Parameters<typeof markStage>[1], extraArtifacts: string[] = []): Promise<boolean> => {
     if (!options.outputRoot) return false;
+    if (await applySkipOverride(id)) return true;
+    if (isForcedStage(id)) return false;
     const snapshot = state.stages.find((stage) => stage.id === id);
     if (!snapshot || (snapshot.status !== "completed" && snapshot.status !== "skipped")) return false;
     const artifactPaths = stageArtifactPaths(id, extraArtifacts).filter(Boolean);
@@ -181,6 +194,24 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     else if (status === "skipped") await emitRuntimeEvent({ type: "stage.skipped", run_id: runId, stage_id: id, reason: error ?? "stage skipped", timestamp });
     else if (status === "failed") await emitRuntimeEvent({ type: "stage.failed", run_id: runId, stage_id: id, error: error ?? "stage failed", timestamp });
     if (status === "completed" || status === "skipped" || status === "failed") activeStage = null;
+  };
+  const applySkipOverride = async (id: ResearchStageId): Promise<boolean> => {
+    const reason = options.stageOverrides?.skipStages?.[id]?.trim();
+    if (!reason) return false;
+    if (!skippedByOverride.has(id)) {
+      skippedByOverride.add(id);
+      await setStage(id, "skipped", reason);
+      await recordDecision({
+        stage_id: id,
+        title: `Skipped ${stageDefinition(id).label}`,
+        rationale_summary: reason,
+        inputs_considered: [id, "stage override"],
+        evidence_refs: stageArtifactPaths(id).map((artifact) => ({ artifact })),
+        alternatives: [{ option: "Run the stage", why_not: "A stage override explicitly skipped it." }],
+        confidence: "medium"
+      });
+    }
+    return true;
   };
   await emitRuntimeEvent({ type: "run.started", run_id: runId, idea, output_root: outputRoot, timestamp: runtimeTimestamp() });
   try {
