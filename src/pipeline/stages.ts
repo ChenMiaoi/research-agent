@@ -36,7 +36,7 @@ export const researchStages: ResearchStageDefinition[] = [
     label: "Idea intake",
     prompt: "00_intake_router.md",
     deterministic: false,
-    artifactPaths: ["docs/idea/idea_brief.md", "docs/idea/assumptions.md"]
+    artifactPaths: ["docs/idea/raw_idea.md", "docs/idea/idea_brief.md", "docs/idea/optimized_research_direction.md", "docs/idea/assumptions.md"]
   },
   {
     id: "search_planning",

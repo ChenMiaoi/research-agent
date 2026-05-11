@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { Box, render, Text, useApp, useInput } from "ink";
 import { generateResearchRepo, resumeResearchRepo, slugify } from "../generator.js";
+import type { IdeaBrief } from "../agents/schemas.js";
 import { loadCodexModelCatalog, type CodexModel, type ReasoningEffort } from "../models.js";
 import { OFFLINE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "../providers.js";
 import { ensureChild, readManifest, status as projectStatus, validate as validateProject } from "../state.js";
@@ -65,6 +66,7 @@ type ActiveSelect = {
   options: SelectOption[];
   selectedIndex: number;
   onSelect: (option: SelectOption) => Promise<void> | void;
+  onCancel?: () => void;
 };
 
 type DirectoryPickerScope = "filesystem" | "drives";
@@ -360,6 +362,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     }
     if (activeSelect) {
       if (key.escape) {
+        activeSelect.onCancel?.();
         setActiveSelect(null);
         append({ role: "error", title: "Selection cancelled", text: "No setting was changed." });
         return;
@@ -715,6 +718,10 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
         runResearchPipeline: true,
         jsonlEvents: true,
         runId,
+        derivedConfig: {
+          project_name_source: "tui_selected_candidate"
+        },
+        projectNameSource: "tui_selected_candidate",
         eventSink: runtimeEvents,
         approvalMode: "block",
         allowNetwork: policy.allowNetwork,
@@ -780,15 +787,80 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
       return;
     }
     captureIdea(trimmedIdea);
-    const finalOutputPath = autoRunOutputForIdea(trimmedIdea, { baseDir: outputBase });
+    const expansion = await prepareIdeaExpansion(trimmedIdea);
+    const suggestedName = await suggestProjectName(expansion.optimizedDirection);
+    const candidates = projectNameCandidatesForIdea(trimmedIdea, expansion.optimizedDirection, suggestedName);
+    const projectName = await chooseProjectName(candidates);
+    if (!projectName) return;
+    const parent = await promptForDirectoryParent(join(outputBase, projectName));
+    if (!parent) {
+      append({ role: "assistant", title: "Research run cancelled", text: "No output parent directory was selected." });
+      return;
+    }
+    const finalOutputPath = join(parent, projectName);
+    setOutputBase(parent);
     setOutput(finalOutputPath);
     append({
       role: "assistant",
-      title: "Research run started",
+      title: "Research run configured",
       text: `Output path selected: ${finalOutputPath}`,
-      details: ["Project/output setup can be changed with /output before the next run."]
+      details: [
+        `Project name: ${projectName}`,
+        "Raw idea and optimized direction will be written under docs/idea/."
+      ]
     });
     await runGenerate(trimmedIdea, finalOutputPath);
+  }
+
+  async function prepareIdeaExpansion(idea: string): Promise<{ ideaBrief: IdeaBrief; optimizedDirection: string }> {
+    if (provider === OFFLINE_PROVIDER_ID) {
+      const ideaBrief = localIdeaBrief(idea);
+      const optimizedDirection = optimizedDirectionFromBrief(ideaBrief);
+      append({ role: "assistant", title: "Idea expanded", text: compactText(optimizedDirection, 180), details: ["Offline provider selected; using deterministic local idea expansion."] });
+      return { ideaBrief, optimizedDirection };
+    }
+    setBusy(true);
+    try {
+      const client = new CodexOAuthClient({ model, reasoningEffort: reasoning });
+      const result = await client.intakeIdea(idea, { timelineWeeks: 12 }, recordProgress);
+      const optimizedDirection = optimizedDirectionFromBrief(result.idea_brief);
+      append({ role: "assistant", title: "Idea expanded", text: compactText(optimizedDirection, 180), details: [`Domain: ${result.idea_brief.target_domain}`, `Venues: ${result.idea_brief.target_venues.join(", ") || "auto"}`] });
+      return { ideaBrief: result.idea_brief, optimizedDirection };
+    } catch (error) {
+      const ideaBrief = localIdeaBrief(idea);
+      const optimizedDirection = optimizedDirectionFromBrief(ideaBrief);
+      append({
+        role: "error",
+        title: "Codex idea expansion unavailable",
+        text: "Using a deterministic local optimized direction before naming.",
+        details: [compactText(error instanceof Error ? error.message : String(error || "unknown error"), 120)]
+      });
+      return { ideaBrief, optimizedDirection };
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseProjectName(candidates: string[]): Promise<string> {
+    const editOption = { label: "Edit", value: "__edit__", description: "Type a custom repository name." };
+    const options = [
+      ...candidates.map((candidate, index) => ({ label: candidate, value: candidate, description: index === 0 ? "Recommended project name." : "Alternative project name." })),
+      editOption
+    ];
+    return new Promise((resolveName) => {
+      openSelect("Choose project name", options, async (option) => {
+        if (option.value === "__edit__") {
+          const custom = await promptForInput("Project name:", {
+            submittedMessage: "submitted project name",
+            historyEnabled: true,
+            initialValue: candidates[0] ?? "idea2repo-project"
+          });
+          resolveName(slugify(custom));
+          return;
+        }
+        resolveName(slugify(option.value));
+      }, () => resolveName(""));
+    });
   }
 
   async function suggestProjectName(idea: string): Promise<string> {
@@ -1047,7 +1119,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     });
   }
 
-  function openSelect(title: string, options: SelectOption[], onSelect: ActiveSelect["onSelect"]): void {
+  function openSelect(title: string, options: SelectOption[], onSelect: ActiveSelect["onSelect"], onCancel?: ActiveSelect["onCancel"]): void {
     if (!options.length) {
       append({ role: "error", title: "No options available", text: title });
       return;
@@ -1056,7 +1128,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     setActiveDirectoryPicker(null);
     setActiveApprovalDialog(null);
     replaceInput("");
-    setActiveSelect({ title, options, selectedIndex: 0, onSelect });
+    setActiveSelect({ title, options, selectedIndex: 0, onSelect, onCancel });
   }
 
   async function promptForDirectoryParent(currentOutput: string): Promise<string> {
@@ -1637,6 +1709,66 @@ export function autoRunOutputForIdea(
   const stamp = formatRunStamp(options.now ?? new Date());
   const slug = slugify(idea).slice(0, 48) || "idea2repo-project";
   return join(baseDir, `${stamp}-${slug}`);
+}
+
+export function projectNameCandidatesForIdea(idea: string, optimizedDirection: string, preferredName?: string): string[] {
+  const preferred = slugify(preferredName ?? "");
+  const optimized = slugify(optimizedDirection);
+  const rawTerms = slugify(idea);
+  const base = optimized !== "idea2repo-project" ? optimized : rawTerms;
+  const seeds = [
+    preferred,
+    base,
+    `${base}-ccf-a`,
+    `${base}-review-cockpit`,
+    `${rawTerms}-evidence`
+  ];
+  const seen = new Set<string>();
+  return seeds
+    .map((value) => slugify(value).slice(0, 64))
+    .filter((value) => {
+      if (!value || value === "idea2repo-project" || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .slice(0, 3)
+    .concat(["evidence-first-research", "ccf-a-research-cockpit", "idea2repo-project"].filter((value) => !seen.has(value)))
+    .slice(0, 3);
+}
+
+function localIdeaBrief(idea: string): IdeaBrief {
+  const terms = idea
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 10);
+  return {
+    idea_summary: compactText(idea, 400),
+    problem: compactText(idea, 400) || "Define the research problem.",
+    target_domain: "AI / LLM Agent",
+    target_venues: ["NeurIPS", "ICML", "ICLR"],
+    method_keywords: terms.filter((term) => /agent|model|system|algorithm|benchmark|runtime|security/i.test(term)).slice(0, 6),
+    task_keywords: terms,
+    evaluation_keywords: ["baseline", "dataset", "metric", "ablation"],
+    resource_constraints: ["single researcher", "12 weeks"],
+    missing_information: [],
+    assumptions: ["Local preflight expansion; research pipeline will verify with evidence."],
+    search_seed_terms: terms
+  };
+}
+
+function optimizedDirectionFromBrief(brief: IdeaBrief): string {
+  const method = brief.method_keywords.slice(0, 4).join(" ");
+  const task = brief.task_keywords.slice(0, 4).join(" ");
+  const evaluation = brief.evaluation_keywords.slice(0, 3).join(", ");
+  return [
+    brief.problem || brief.idea_summary,
+    method ? `Method focus: ${method}.` : "",
+    task ? `Task setting: ${task}.` : "",
+    evaluation ? `Evaluation: ${evaluation}.` : "",
+    brief.target_venues.length ? `Target venues: ${brief.target_venues.slice(0, 3).join(", ")}.` : ""
+  ].filter(Boolean).join(" ");
 }
 
 function formatRunStamp(date: Date): string {

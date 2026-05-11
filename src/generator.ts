@@ -59,6 +59,7 @@ export type GenerateOptions = {
   model?: string | null;
   reasoningEffort?: string | null;
   derivedConfig?: Record<string, unknown>;
+  projectNameSource?: string;
   discussionAssumptions?: string[];
   progressCallback?: (message: string) => void;
   runResearchPipeline?: boolean;
@@ -253,6 +254,7 @@ export async function generateResearchRepo(idea: string, output: string, options
   });
   const fileMap = buildFiles({
     projectName,
+    rawIdea: idea,
     idea: artifactIdea,
     diagnosis,
     createdAt,
@@ -350,6 +352,7 @@ export async function generateResearchRepo(idea: string, output: string, options
       selectedApiShape: providerAnalysis.selectedApiShape,
       model: options.model ?? null,
       reasoningEffort: options.reasoningEffort ?? null,
+      projectNameSource: options.projectNameSource ?? (stringCell(options.derivedConfig?.project_name_source) || "output_basename"),
       derivedConfig: options.derivedConfig,
       discussionAssumptions: options.discussionAssumptions,
       pipeline,
@@ -776,6 +779,7 @@ async function regenerateFromManifest(root: string, manifest: ProjectManifest, f
   const projectName = manifest.project_name || slugify(root.split(/[\\/]/).pop() || request.idea);
   const files = buildFiles({
     projectName,
+    rawIdea: request.idea,
     idea: request.idea,
     diagnosis,
     createdAt: manifest.created_at || today(),
@@ -850,6 +854,7 @@ async function regenerateFromManifest(root: string, manifest: ProjectManifest, f
 
 function buildFiles(options: {
   projectName: string;
+  rawIdea?: string;
   idea: string;
   diagnosis: Diagnosis;
   createdAt: string;
@@ -900,6 +905,8 @@ function buildFiles(options: {
     "docs/reference/claim_evidence_matrix.csv": csv(claimRows),
     "docs/reference/paper_notes/README.md": "# Paper Notes\n\nAdd one note per verified paper. Include source URL, BibTeX key, claim relevance, and collision risk.\n",
     "docs/reference/pdfs/README.md": "# PDFs\n\nDo not commit publisher PDFs unless the license explicitly permits it. Record citation metadata in `docs/reference/related_work_matrix.csv`.\n",
+    "docs/idea/raw_idea.md": rawIdeaMarkdown(options.rawIdea ?? options.idea),
+    "docs/idea/optimized_research_direction.md": generatorOptimizedDirectionMarkdown(options.diagnosis),
     [`docs/execution_plan/${options.timelineWeeks}_week_plan.md`]: timelinePlan(options.diagnosis, options.timelineWeeks, options.resources, options.analysis),
     "docs/execution_plan/milestones.md": milestones(),
     "docs/execution_plan/todo.md": todo(options.diagnosis, options.analysis),
@@ -977,6 +984,7 @@ function generationMetadata(options: {
   model: string | null;
   reasoningEffort: string | null;
   derivedConfig?: Record<string, unknown>;
+  projectNameSource?: string;
   discussionAssumptions?: string[];
   pipeline?: ResearchPipelineResult | null;
   templateProfileId?: string | null;
@@ -993,6 +1001,7 @@ function generationMetadata(options: {
         ? { from: LEGACY_OAUTH_PROVIDER_ID, to: OPENAI_CODEX_PROVIDER_ID }
         : null,
     derived_config: options.derivedConfig ?? {},
+    project_name_source: options.projectNameSource ?? "output_basename",
     discussion_assumptions: options.discussionAssumptions ?? [],
     research_pipeline: options.pipeline
       ? {
@@ -1046,6 +1055,35 @@ function providerConfigReport(options: {
 
 - Do not read ~/.codex auth files or scrape browser cookies.
 - Store generated research artifacts only; never write tokens or private provider responses.
+`;
+}
+
+function rawIdeaMarkdown(idea: string): string {
+  return `# Raw Idea
+
+${idea.trim() || "No raw idea was provided."}
+`;
+}
+
+function generatorOptimizedDirectionMarkdown(diagnosis: Diagnosis): string {
+  const route = diagnosis.routes[0]?.domain;
+  return `# Optimized Research Direction
+
+## Research Problem
+
+${diagnosis.parsed_idea.problem}
+
+## Evidence-First Direction
+
+${diagnosis.revised_plan_text}
+
+## Target Domain
+
+${route?.label ?? "Unknown"}
+
+## Target Venues
+
+${route ? markdownList(route.primary_venues.slice(0, 4)) : "- unknown"}
 `;
 }
 

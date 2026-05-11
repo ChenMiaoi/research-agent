@@ -953,7 +953,9 @@ function pipelineArtifacts(input: {
     "paper/abstract.md": paperAbstractMarkdown(input),
     "paper/related_work.md": paperRelatedWorkMarkdown(input, relatedWorkReport),
     "papers/papers.bib": referencesBib(verifiedPapers),
+    "docs/idea/raw_idea.md": `# Raw Idea\n\n${input.idea.trim() || "No raw idea was provided."}\n`,
     "docs/idea/idea_brief.md": `# Idea Brief\n\n${JSON.stringify(input.ideaBrief, null, 2)}\n`,
+    "docs/idea/optimized_research_direction.md": pipelineOptimizedDirectionMarkdown(input.ideaBrief, input.agentStrategy),
     "docs/idea/assumptions.md": `# Assumptions\n\n${input.ideaBrief.assumptions.map((item) => `- ${item}`).join("\n")}\n`,
     "docs/relative_work/search_plan.json": JSON.stringify(input.searchPlan, null, 2) + "\n",
     "docs/relative_work/search_report.md": input.searchReport,
@@ -1742,6 +1744,49 @@ ${markdownList(strategy.datasets)}
 ## Metrics
 
 ${markdownList(strategy.metrics)}
+`;
+}
+
+function pipelineOptimizedDirectionMarkdown(brief: IdeaBrief, strategy: ResearchStrategy | null): string {
+  if (strategy) {
+    return `# Optimized Research Direction
+
+## Revised Direction
+
+${strategy.revised_idea}
+
+## Central Hypothesis
+
+${strategy.central_hypothesis}
+
+## Evaluation Commitments
+
+- Baselines: ${strategy.baselines.join("; ") || "blocked until evidence identifies reviewer-expected baselines"}
+- Datasets: ${strategy.datasets.join("; ") || "blocked until evidence identifies datasets or benchmarks"}
+- Metrics: ${strategy.metrics.join("; ") || "blocked until evidence identifies metrics"}
+`;
+  }
+  return `# Optimized Research Direction
+
+## Search-Ready Summary
+
+${brief.idea_summary}
+
+## Research Problem
+
+${brief.problem}
+
+## Target Domain
+
+${brief.target_domain}
+
+## Target Venues
+
+${markdownList(brief.target_venues)}
+
+## Evaluation Focus
+
+${markdownList(brief.evaluation_keywords)}
 `;
 }
 
