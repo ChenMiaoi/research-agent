@@ -22,6 +22,7 @@ import { inspectWorkspace } from "./workspace.js";
 import { runWorkflow, workflowSummary } from "./workflow.js";
 import { CodexOAuthClient } from "./auth/codex-oauth.js";
 import { runResearchPipeline, type ResearchPipelineResult } from "./pipeline/research-pipeline.js";
+import { JsonlEventSink } from "./runtime/events.js";
 import { writeResearchPipelineState } from "./pipeline/stage-state.js";
 import { resolveTemplateProfile, templateDecisionMarkdown } from "./skills/templates/resolve.js";
 import { renderPaper } from "./skills/templates/render.js";
@@ -66,6 +67,8 @@ export type GenerateOptions = {
   templateYear?: number;
   compilePaper?: boolean;
   packageOverleaf?: boolean;
+  jsonlEvents?: boolean;
+  runId?: string;
 };
 
 export type GeneratedProject = {
@@ -110,6 +113,7 @@ export async function generateResearchRepo(idea: string, output: string, options
   if ((options.allowNetwork || options.downloadPdfs) && !policy.allowNetwork) requirePermission(policy, "network", "research pipeline network access");
 
   const createdAt = options.createdAt ?? today();
+  const runtimeEvents = options.jsonlEvents ? new JsonlEventSink(join(root, ".idea2repo", "trace.jsonl")) : undefined;
   const pipeline = options.runResearchPipeline
     ? await runResearchPipeline(idea, {
         allowNetwork: Boolean(options.allowNetwork && policy.allowNetwork),
@@ -126,6 +130,8 @@ export async function generateResearchRepo(idea: string, output: string, options
         outputRoot: root,
         venue: options.venue,
         strictCcfA: options.strictCcfA,
+        events: runtimeEvents,
+        runId: options.runId,
         progress: options.progressCallback
       })
     : null;

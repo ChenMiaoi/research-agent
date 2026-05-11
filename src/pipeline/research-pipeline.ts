@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CandidateTriage, FeasibilityReview, IdeaBrief, NoveltyGapAnalysis, PdfPaperNote, RelatedWorkAnalysis, ResearchStrategy, SearchPlan, StrictCcfAReview } from "../agents/schemas.js";
@@ -21,6 +22,7 @@ import { createZipArchive, type ZipEntry } from "../skills/templates/package.js"
 import { resolveTemplateProfile, templateDecisionMarkdown } from "../skills/templates/resolve.js";
 import { renderPaper } from "../skills/templates/render.js";
 import type { TemplateResolveInput } from "../skills/templates/types.js";
+import { runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "../runtime/events.js";
 import { createResearchPipelineState, markStage, readResearchPipelineState, writeResearchPipelineState, type ResearchPipelineState } from "./stage-state.js";
 import { researchStages } from "./stages.js";
 
@@ -49,6 +51,8 @@ export type ResearchPipelineOptions = {
   venue?: string;
   strictCcfA?: boolean;
   agentClient?: StagedResearchAgent;
+  events?: EventSink;
+  runId?: string;
   progress?: (message: string) => void;
 };
 
@@ -71,6 +75,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   const restoredState = options.outputRoot ? await readResearchPipelineState(outputRoot) : null;
   if (restoredState && restoredState.idea !== idea) throw new Error(`research pipeline state belongs to a different idea: ${restoredState.idea}`);
   let state = restoredState ?? createResearchPipelineState(idea, options.outputRoot);
+  const runId = options.runId ?? randomUUID();
   const warnings: string[] = [];
   const resumedArtifacts: Record<string, string> = {};
   const readArtifact = async (relativePath: string): Promise<string | null> => {
@@ -102,12 +107,28 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   const preserveStageArtifacts = async (id: Parameters<typeof markStage>[1], extraArtifacts: string[] = []): Promise<void> => {
     Object.assign(preservedOutputArtifacts, await readArtifacts(readArtifact, stageArtifactPaths(id, extraArtifacts)));
   };
+  let activeStage: { id: Parameters<typeof markStage>[1]; label: string } | null = null;
+  const emitRuntimeEvent = async (event: Idea2RepoEvent): Promise<void> => {
+    await options.events?.emit(event);
+  };
   const setStage = async (id: Parameters<typeof markStage>[1], status: Parameters<typeof markStage>[2], error?: string): Promise<void> => {
     const stage = researchStages.find((candidate) => candidate.id === id);
-    if (status === "running") options.progress?.(`Research pipeline: ${stage?.label ?? id}`);
+    const label = stage?.label ?? id;
+    if (status === "running") {
+      activeStage = { id, label };
+      options.progress?.(`Research pipeline: ${label}`);
+    }
     state = markStage(state, id, status, { ...(error ? { error } : {}), artifacts: stageArtifactPaths(id) });
     if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
+    const timestamp = runtimeTimestamp();
+    if (status === "running") await emitRuntimeEvent({ type: "stage.started", run_id: runId, stage_id: id, label, timestamp });
+    else if (status === "completed") await emitRuntimeEvent({ type: "stage.completed", run_id: runId, stage_id: id, artifacts: stageArtifactPaths(id), timestamp });
+    else if (status === "skipped") await emitRuntimeEvent({ type: "stage.skipped", run_id: runId, stage_id: id, reason: error ?? "stage skipped", timestamp });
+    else if (status === "failed") await emitRuntimeEvent({ type: "stage.failed", run_id: runId, stage_id: id, error: error ?? "stage failed", timestamp });
+    if (status === "completed" || status === "skipped" || status === "failed") activeStage = null;
   };
+  await emitRuntimeEvent({ type: "run.started", run_id: runId, idea, output_root: outputRoot, timestamp: runtimeTimestamp() });
+  try {
   const agent = createStagedAgent(options);
   const diagnosis = diagnoseIdea(idea, { requestedDomains: options.requestedDomains });
   const route = diagnosis.routes[0]!;
@@ -417,7 +438,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     await setStage("artifact_writing", "running");
     await setStage("artifact_writing", "completed");
   }
-  return {
+  const result = {
     state,
     ideaBrief,
     searchPlan,
@@ -429,6 +450,19 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     artifacts,
     warnings: [...warnings, ...(options.allowNetwork ? [] : ["Network disabled; literature candidates require a later search stage."])]
   };
+  await emitRuntimeEvent({ type: "run.completed", run_id: runId, timestamp: runtimeTimestamp() });
+  return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedStage = activeStage as { id: Parameters<typeof markStage>[1]; label: string } | null;
+    if (failedStage) {
+      state = markStage(state, failedStage.id, "failed", { error: message, artifacts: stageArtifactPaths(failedStage.id) });
+      if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
+      await emitRuntimeEvent({ type: "stage.failed", run_id: runId, stage_id: failedStage.id, error: message, timestamp: runtimeTimestamp() });
+    }
+    await emitRuntimeEvent({ type: "run.failed", run_id: runId, error: message, timestamp: runtimeTimestamp() });
+    throw error;
+  }
 }
 
 function offlineSearchPlan(brief: IdeaBrief, maxPapers: number): SearchPlan {

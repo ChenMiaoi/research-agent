@@ -328,6 +328,7 @@ async function commandGenerate(argv: string[], researchMode = false): Promise<nu
     templateYear: optionalNumberFlag(parsed, "template-year") ?? optionalNumberFlag(parsed, "year"),
     compilePaper: hasFlag(parsed, "compile-paper"),
     packageOverleaf: hasFlag(parsed, "package-overleaf"),
+    jsonlEvents: hasFlag(parsed, "jsonl-events"),
     permissionPolicy: policyFromFlags(parsed)
   });
   const diagnosis = result.diagnosis;
