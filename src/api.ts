@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { buildGithubExportPlan } from "./github-export.js";
-import { generateResearchRepo, resumeResearchRepo } from "./generator.js";
+import { generateResearchRepo, resumeResearchRepo, type GenerateOptions } from "./generator.js";
 import { paperCandidateToRecord, searchLiteratureAsync } from "./literature.js";
 import { safeProviderReport, providerSchema } from "./providers.js";
 import { diagnoseIdea } from "./scoring.js";
@@ -11,6 +11,11 @@ import { submissionReady, blockingReasons } from "./evidence.js";
 import { runWorkflow } from "./workflow.js";
 import { openaiCodexOAuthProvider } from "./auth/codex-oauth.js";
 import { loadCodexModelCatalog } from "./models.js";
+import { readApprovalRecords } from "./runtime/approvals.js";
+import { readDecisionRecords } from "./runtime/decisions.js";
+import { readPlanState } from "./runtime/plan.js";
+import { isFinalStatus, RunManager, type RuntimeRunRecord } from "./runtime/runs.js";
+import type { Idea2RepoEvent } from "./runtime/events.js";
 
 export type ApiServer = {
   server: Server;
@@ -20,10 +25,13 @@ export type ApiServer = {
 
 type JsonValue = Record<string, unknown> | unknown[];
 
-export function createApiHandler() {
+const defaultRunManager = new RunManager();
+
+export function createApiHandler(options: { runManager?: RunManager } = {}) {
+  const runManager = options.runManager ?? defaultRunManager;
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     try {
-      await route(request, response);
+      await route(request, response, runManager);
     } catch (error) {
       const statusCode = error instanceof HttpError ? error.statusCode : 500;
       sendJson(response, statusCode, { detail: error instanceof Error ? error.message : "unknown error" });
@@ -51,7 +59,7 @@ export async function startApiServer(options: { host?: string; port?: number } =
   };
 }
 
-async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function route(request: IncomingMessage, response: ServerResponse, runManager: RunManager): Promise<void> {
   const url = new URL(request.url ?? "/", "http://localhost");
   const path = url.pathname;
   if (request.method === "OPTIONS") {
@@ -73,32 +81,83 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     });
     return;
   }
+  if (request.method === "GET" && path === "/runs") {
+    sendJson(response, 200, { runs: runManager.list() });
+    return;
+  }
+  const runMatch = /^\/runs\/([^/]+)(?:\/(.*))?$/.exec(path);
+  if (request.method === "GET" && runMatch) {
+    const run = requiredRun(runManager, decodeURIComponent(runMatch[1]!));
+    const suffix = runMatch[2] ?? "";
+    if (!suffix) {
+      sendJson(response, 200, runSnapshot(run));
+      return;
+    }
+    if (suffix === "events") {
+      sendSse(response, runManager, run);
+      return;
+    }
+    if (suffix === "plan") {
+      sendJson(response, 200, { run_id: run.id, plan: await readPlanState(run.output_root) });
+      return;
+    }
+    if (suffix === "decisions") {
+      sendJson(response, 200, { run_id: run.id, decisions: await readDecisionRecords(run.output_root).catch(() => []) });
+      return;
+    }
+    if (suffix === "artifacts") {
+      const artifacts = await artifactEntries(run.output_root);
+      sendJson(response, 200, { run_id: run.id, root: run.output_root, artifacts, tree: artifactTree(artifacts) });
+      return;
+    }
+    if (suffix === "approvals") {
+      sendJson(response, 200, { run_id: run.id, approvals: await readApprovalRecords(run.output_root) });
+      return;
+    }
+    throw new HttpError(404, "route not found");
+  }
   if (request.method !== "POST") throw new HttpError(404, "route not found");
   const body = (await readJson(request)) as Record<string, unknown>;
+  if (path === "/runs") {
+    const idea = requiredString(body.idea, "idea");
+    const output = resolve(requiredString(body.output, "output"));
+    const run = runManager.start({ idea, outputRoot: output }, async ({ runId, events }) => {
+      const result = await generateResearchRepo(idea, output, {
+        ...generateOptionsFromBody(body),
+        runResearchPipeline: body.run_research_pipeline !== false,
+        jsonlEvents: body.jsonl_events !== false,
+        runId,
+        eventSink: events,
+        permissionPolicy: {
+          allowWrite: true,
+          allowOverwrite: Boolean(body.force),
+          allowNetwork: Boolean(body.allow_network),
+          allowLogin: false,
+          allowInstall: false,
+          allowPublish: false
+        }
+      });
+      return {
+        root: result.root,
+        project_name: result.project_name,
+        analysis_source: result.analysis_source,
+        fallback_reason: result.fallback_reason
+      };
+    });
+    sendJson(response, 202, {
+      run_id: run.id,
+      status: run.status,
+      output_root: run.output_root,
+      events_url: `/runs/${encodeURIComponent(run.id)}/events`,
+      plan_url: `/runs/${encodeURIComponent(run.id)}/plan`,
+      decisions_url: `/runs/${encodeURIComponent(run.id)}/decisions`,
+      artifacts_url: `/runs/${encodeURIComponent(run.id)}/artifacts`
+    });
+    return;
+  }
   if (path === "/generate") {
     const result = await generateResearchRepo(requiredString(body.idea, "idea"), requiredString(body.output, "output"), {
-      requestedDomains: stringArray(body.domains),
-      timelineWeeks: numberValue(body.weeks, 12),
-      resources: stringArray(body.resources),
-      stack: body.stack === "ts" ? "ts" : "python",
-      force: Boolean(body.force),
-      offline: Boolean(body.offline),
-      provider: stringOrNull(body.provider),
-      model: stringOrNull(body.model),
-      reasoningEffort: stringOrNull(body.reasoning_effort),
-      runResearchPipeline: Boolean(body.run_research_pipeline),
-      allowNetwork: Boolean(body.allow_network),
-      downloadPdfs: Boolean(body.download_pdfs),
-      maxPapers: numberValue(body.max_papers, 20),
-      sources: stringArray(body.sources),
-      strictCcfA: Boolean(body.strict_ccf_a),
-      venue: stringOrNull(body.venue) ?? undefined,
-      template: stringOrNull(body.template) ?? undefined,
-      reviewMode: reviewModeValue(body.review_mode),
-      paperType: paperTypeValue(body.paper_type),
-      templateYear: optionalNumberValue(body.template_year),
-      compilePaper: Boolean(body.compile_paper),
-      packageOverleaf: Boolean(body.package_overleaf),
+      ...generateOptionsFromBody(body),
       permissionPolicy: {
         allowWrite: true,
         allowOverwrite: Boolean(body.force),
@@ -249,6 +308,71 @@ function sendJson(response: ServerResponse, statusCode: number, payload: JsonVal
   response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
   response.setHeader("access-control-allow-headers", "content-type");
   response.end(body);
+}
+
+function sendSse(response: ServerResponse, runManager: RunManager, run: RuntimeRunRecord): void {
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/event-stream; charset=utf-8");
+  response.setHeader("cache-control", "no-cache, no-transform");
+  response.setHeader("connection", "keep-alive");
+  response.setHeader("access-control-allow-origin", "*");
+  for (const event of run.events) writeSseEvent(response, event);
+  if (isFinalStatus(run.status)) {
+    response.end();
+    return;
+  }
+  const unsubscribe = runManager.subscribe(run.id, (event) => {
+    writeSseEvent(response, event);
+    const current = runManager.get(run.id);
+    if (current && isFinalStatus(current.status)) {
+      unsubscribe?.();
+      response.end();
+    }
+  });
+  if (!unsubscribe) response.end();
+}
+
+function writeSseEvent(response: ServerResponse, event: Idea2RepoEvent): void {
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function runSnapshot(run: RuntimeRunRecord): Record<string, unknown> {
+  const { events: _events, ...snapshot } = run;
+  return snapshot;
+}
+
+function requiredRun(runManager: RunManager, runId: string): RuntimeRunRecord {
+  const run = runManager.get(runId);
+  if (!run) throw new HttpError(404, "run not found");
+  return run;
+}
+
+function generateOptionsFromBody(body: Record<string, unknown>): GenerateOptions {
+  return {
+    requestedDomains: stringArray(body.domains),
+    timelineWeeks: numberValue(body.weeks, 12),
+    resources: stringArray(body.resources),
+    stack: body.stack === "ts" ? "ts" : "python",
+    force: Boolean(body.force),
+    offline: Boolean(body.offline),
+    provider: stringOrNull(body.provider),
+    model: stringOrNull(body.model),
+    reasoningEffort: stringOrNull(body.reasoning_effort),
+    runResearchPipeline: Boolean(body.run_research_pipeline),
+    allowNetwork: Boolean(body.allow_network),
+    downloadPdfs: Boolean(body.download_pdfs),
+    maxPapers: numberValue(body.max_papers, 20),
+    sources: stringArray(body.sources),
+    strictCcfA: Boolean(body.strict_ccf_a),
+    venue: stringOrNull(body.venue) ?? undefined,
+    template: stringOrNull(body.template) ?? undefined,
+    reviewMode: reviewModeValue(body.review_mode),
+    paperType: paperTypeValue(body.paper_type),
+    templateYear: optionalNumberValue(body.template_year),
+    compilePaper: Boolean(body.compile_paper),
+    packageOverleaf: Boolean(body.package_overleaf)
+  };
 }
 
 async function existingRoot(output: string): Promise<string> {

@@ -23,7 +23,7 @@ import { inspectWorkspace } from "./workspace.js";
 import { runWorkflow, workflowSummary } from "./workflow.js";
 import { createProviderAdapter } from "./providers/index.js";
 import { runResearchPipeline, type ResearchPipelineResult } from "./pipeline/research-pipeline.js";
-import { JsonlEventSink } from "./runtime/events.js";
+import { CompositeEventSink, JsonlEventSink, runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "./runtime/events.js";
 import { PlanEventSink } from "./runtime/plan.js";
 import { approvalPolicyFromPermissions } from "./runtime/approvals.js";
 import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolRegistry } from "./runtime/tools.js";
@@ -73,6 +73,7 @@ export type GenerateOptions = {
   packageOverleaf?: boolean;
   jsonlEvents?: boolean;
   runId?: string;
+  eventSink?: EventSink;
 };
 
 export type GeneratedProject = {
@@ -119,7 +120,8 @@ export async function generateResearchRepo(idea: string, output: string, options
   const createdAt = options.createdAt ?? today();
   const runId = options.runId ?? randomUUID();
   const traceEvents = options.jsonlEvents ? new JsonlEventSink(join(root, ".idea2repo", "trace.jsonl")) : undefined;
-  const runtimeEvents = options.runResearchPipeline ? new PlanEventSink(root, runId, traceEvents) : traceEvents;
+  const baseEvents = combineEventSinks(traceEvents, options.eventSink);
+  const runtimeEvents = options.runResearchPipeline ? new PlanEventSink(root, runId, baseEvents) : baseEvents;
   const toolRegistry = createCoreToolRegistry();
   const toolContext = createToolContext({
     runId,
@@ -152,7 +154,7 @@ export async function generateResearchRepo(idea: string, output: string, options
         outputRoot: root,
         venue: options.venue,
         strictCcfA: options.strictCcfA,
-        events: runtimeEvents,
+        events: runtimeEvents ? new PipelineCompletionSuppressingSink(runtimeEvents) : undefined,
         runId,
         progress: options.progressCallback
       })
@@ -302,6 +304,7 @@ export async function generateResearchRepo(idea: string, output: string, options
   });
   written.push(manifestPath, join(root, RUN_LOG_PATH));
   options.progressCallback?.("Artifacts: manifest and status written");
+  await runtimeEvents?.emit({ type: "run.completed", run_id: runId, timestamp: runtimeTimestamp() });
 
   return {
     root,
@@ -329,6 +332,22 @@ async function writeGeneratedArtifact(registry: ToolRegistry, ctx: ToolContext, 
     encoding: relativePath.endsWith(".zip") ? "latin1" : "utf8"
   }, ctx);
   return ensureChild(ctx.outputRoot, relativePath);
+}
+
+function combineEventSinks(...sinks: Array<EventSink | undefined>): EventSink | undefined {
+  const active = sinks.filter((sink): sink is EventSink => Boolean(sink));
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  return new CompositeEventSink(active);
+}
+
+class PipelineCompletionSuppressingSink implements EventSink {
+  constructor(private readonly downstream: EventSink) {}
+
+  async emit(event: Idea2RepoEvent): Promise<void> {
+    if (event.type === "run.completed") return;
+    await this.downstream.emit(event);
+  }
 }
 
 async function adoptGeneratedArtifact(registry: ToolRegistry, ctx: ToolContext, relativePath: string): Promise<string> {
