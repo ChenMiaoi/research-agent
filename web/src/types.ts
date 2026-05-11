@@ -85,6 +85,7 @@ export type RuntimeEvent =
   | { type: "stage.blocked"; run_id: string; stage_id: string; reason: string; timestamp: string }
   | { type: "plan.updated"; run_id: string; plan: RuntimePlanItem[]; timestamp: string }
   | { type: "decision.recorded"; run_id: string; decision_id: string; stage_id?: string; title: string; timestamp: string }
+  | { type: "paper.found"; run_id: string; paper_id: string; title: string; stage_id?: string; venue?: string; year?: number | null; relevance_score?: number; ccf_rank?: "A" | "B" | "C" | "unknown"; venue_match?: "target" | "primary" | "secondary" | "ccf_a" | "known" | "unknown"; track_status?: "main_conference" | "journal" | "workshop" | "demo" | "short_paper" | "unknown"; novelty_risk?: "high" | "medium" | "low" | "unknown"; pdf_status?: "available" | "unavailable" | "needs_approval" | "downloaded"; reason?: string; timestamp: string }
   | { type: "artifact.written"; run_id: string; path: string; sha256: string; bytes: number; timestamp: string }
   | { type: "artifact.snapshot"; run_id: string; snapshot_id: string; path: string; timestamp: string }
   | { type: "artifact.restored"; run_id: string; snapshot_id: string; path: string; timestamp: string }

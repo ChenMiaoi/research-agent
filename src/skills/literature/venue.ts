@@ -1,0 +1,165 @@
+import { loadVenueDatabase, type VenueDatabase, type VenueRecord } from "../../venues.js";
+import type { CandidateCcfRank, CandidateNoveltyRisk, CandidatePdfStatus, CandidateTrackStatus, CandidateVenueMatch, PaperCandidate } from "./types.js";
+
+export type VenueResolution = {
+  record: VenueRecord;
+  canonical: string;
+  domain: string;
+  tier: "primary" | "secondary" | "known";
+};
+
+export type CandidateEnrichmentOptions = {
+  idea?: string;
+  targetVenues?: string[];
+  database?: VenueDatabase;
+};
+
+const STOPWORD_INITIALS = new Set(["and", "for", "of", "on", "the", "to", "with"]);
+const TRACK_QUALIFIER_TOKENS = new Set(["workshop", "workshops", "demo", "demonstration", "short", "paper", "papers", "findings", "companion", "poster", "extended", "abstract"]);
+
+export function enrichCandidates(candidates: PaperCandidate[], options: CandidateEnrichmentOptions = {}): PaperCandidate[] {
+  return candidates.map((candidate) => enrichCandidate(candidate, options));
+}
+
+export function enrichCandidate(candidate: PaperCandidate, options: CandidateEnrichmentOptions = {}): PaperCandidate {
+  const database = options.database ?? loadVenueDatabase();
+  const resolution = candidate.venue ? resolveVenue(candidate.venue, database) : null;
+  const targetResolutions = (options.targetVenues ?? []).flatMap((venue) => {
+    const resolved = resolveVenue(venue, database);
+    return resolved ? [resolved] : [];
+  });
+  const trackStatus = candidate.track_status ?? inferTrackStatus(candidate, resolution?.record);
+  const ccfRank = candidate.ccf_rank ?? (resolution?.record.ccf_category as CandidateCcfRank | undefined) ?? "unknown";
+  const venueMatch = candidate.venue_match ?? venueMatchFor(resolution, targetResolutions);
+  const pdfStatus = candidate.pdf_status ?? inferPdfStatus(candidate);
+  const noveltyRisk = candidate.novelty_risk ?? inferNoveltyRisk(candidate, options.idea, venueMatch, trackStatus);
+  const reason = candidate.reason ?? enrichmentReason({ resolution, venueMatch, trackStatus, ccfRank, pdfStatus, noveltyRisk });
+  return {
+    ...candidate,
+    venue: resolution?.canonical ?? candidate.venue,
+    ccf_rank: ccfRank,
+    venue_match: venueMatch,
+    track_status: trackStatus,
+    novelty_risk: noveltyRisk,
+    pdf_status: pdfStatus,
+    reason
+  };
+}
+
+export function resolveVenue(value: string, database = loadVenueDatabase()): VenueResolution | null {
+  const normalized = normalizeVenueAlias(value);
+  if (!normalized) return null;
+  for (const domain of Object.values(database.domains)) {
+    for (const [name, record] of Object.entries(domain.venue_records)) {
+      const aliases = venueAliases(name, record);
+      if (!aliases.some((alias) => venueAliasMatches(normalized, alias))) continue;
+      const tier = domain.primary_venues.includes(name) ? "primary" : domain.secondary_venues.includes(name) ? "secondary" : "known";
+      return { record, canonical: name, domain: domain.key, tier };
+    }
+  }
+  return null;
+}
+
+export function normalizeVenueAlias(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/&/g, " and ")
+    .replace(/\bnips\b/g, "neurips")
+    .replace(/\bneurips\b/g, "neurips")
+    .replace(/\bs\s*&\s*p\b/g, "security privacy")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function isMainTrackCandidate(candidate: PaperCandidate): boolean {
+  return candidate.track_status === "main_conference" || candidate.track_status === "journal";
+}
+
+function venueAliases(name: string, record: VenueRecord): string[] {
+  return [
+    name,
+    record.full_name,
+    acronym(record.full_name),
+    record.dblp_url.split("/").filter(Boolean).at(-1) ?? ""
+  ].map(normalizeVenueAlias).filter(Boolean);
+}
+
+function venueAliasMatches(value: string, alias: string): boolean {
+  if (!alias) return false;
+  if (value === alias) return true;
+  const valueTokens = value.split(" ");
+  const aliasTokens = alias.split(" ");
+  if (aliasTokens.length === 1 && valueTokens.includes(alias) && valueTokens.some((token) => TRACK_QUALIFIER_TOKENS.has(token))) return true;
+  if (aliasTokens.length < 2) return false;
+  return containsConsecutiveTokens(valueTokens, aliasTokens);
+}
+
+function containsConsecutiveTokens(valueTokens: string[], aliasTokens: string[]): boolean {
+  if (aliasTokens.length > valueTokens.length) return false;
+  for (let index = 0; index <= valueTokens.length - aliasTokens.length; index += 1) {
+    if (aliasTokens.every((token, offset) => valueTokens[index + offset] === token)) return true;
+  }
+  return false;
+}
+
+function acronym(value: string): string {
+  return value
+    .replace(/&/g, " and ")
+    .split(/\s+/)
+    .filter((word) => word && !STOPWORD_INITIALS.has(word.toLowerCase()))
+    .map((word) => word[0])
+    .join("");
+}
+
+function venueMatchFor(resolution: VenueResolution | null, targetResolutions: VenueResolution[]): CandidateVenueMatch {
+  if (!resolution) return "unknown";
+  if (targetResolutions.some((target) => target.canonical === resolution.canonical)) return "target";
+  if (resolution.tier === "primary") return "primary";
+  if (resolution.tier === "secondary") return "secondary";
+  if (resolution.record.ccf_category === "A") return "ccf_a";
+  return "known";
+}
+
+function inferTrackStatus(candidate: PaperCandidate, record: VenueRecord | undefined): CandidateTrackStatus {
+  const text = `${candidate.venue ?? ""} ${candidate.title}`.toLowerCase();
+  if (/\bworkshop|workshops|workshop on|workshop proceedings|workshops at\b/.test(text)) return "workshop";
+  if (/\bdemo|demonstration|artifact track|systems track demo\b/.test(text)) return "demo";
+  if (/\bshort paper|short papers|findings of|companion proceedings|extended abstract|poster\b/.test(text)) return "short_paper";
+  if (record?.venue_type === "journal") return "journal";
+  if (record) return "main_conference";
+  return "unknown";
+}
+
+function inferPdfStatus(candidate: PaperCandidate): CandidatePdfStatus {
+  return candidate.pdf_urls.length ? "available" : "unavailable";
+}
+
+function inferNoveltyRisk(candidate: PaperCandidate, idea: string | undefined, venueMatch: CandidateVenueMatch, trackStatus: CandidateTrackStatus): CandidateNoveltyRisk {
+  const ideaTerms = terms(idea ?? "");
+  if (!ideaTerms.length) return "unknown";
+  const text = `${candidate.title} ${candidate.abstract ?? ""}`.toLowerCase();
+  const overlap = ideaTerms.filter((term) => text.includes(term)).length / ideaTerms.length;
+  if (overlap >= 0.6 && (venueMatch === "target" || venueMatch === "primary" || venueMatch === "ccf_a") && trackStatus === "main_conference") return "high";
+  if (overlap >= 0.35) return "medium";
+  if (overlap > 0) return "low";
+  return "unknown";
+}
+
+function enrichmentReason(input: {
+  resolution: VenueResolution | null;
+  venueMatch: CandidateVenueMatch;
+  trackStatus: CandidateTrackStatus;
+  ccfRank: CandidateCcfRank;
+  pdfStatus: CandidatePdfStatus;
+  noveltyRisk: CandidateNoveltyRisk;
+}): string {
+  const venue = input.resolution ? `${input.resolution.canonical} CCF-${input.ccfRank}` : "venue not matched to seed CCF database";
+  return `${venue}; venue_match=${input.venueMatch}; track_status=${input.trackStatus}; pdf_status=${input.pdfStatus}; novelty_risk=${input.noveltyRisk}`;
+}
+
+function terms(value: string): string[] {
+  return [...new Set(value.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter((term) => term.length > 3))].slice(0, 24);
+}

@@ -44,8 +44,12 @@ export type Idea2RepoEvent =
       venue?: string;
       year?: number | null;
       relevance_score?: number;
+      ccf_rank?: "A" | "B" | "C" | "unknown";
+      venue_match?: "target" | "primary" | "secondary" | "ccf_a" | "known" | "unknown";
+      track_status?: "main_conference" | "journal" | "workshop" | "demo" | "short_paper" | "unknown";
       novelty_risk?: "high" | "medium" | "low" | "unknown";
       pdf_status?: "available" | "unavailable" | "needs_approval" | "downloaded";
+      reason?: string;
       timestamp: string;
     }
   | {

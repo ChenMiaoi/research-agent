@@ -29,12 +29,12 @@ export async function searchLiteratureDeterministic(options: LiteratureSearchOpt
   let executedQueries = queries;
   await runQueries(queries, sources, perSourceLimit, fetchImpl, results, options.signal);
   const gate = Math.min(8, limit);
-  let candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" ")).slice(0, limit);
+  let candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" "), { targetVenues: options.targetVenues }).slice(0, limit);
   if (candidates.length < gate) {
     const expandedQueries = expandedRecallQueries(queries);
     executedQueries = [...queries, ...expandedQueries];
     await runQueries(expandedQueries, sources, perSourceLimit, fetchImpl, results, options.signal);
-    candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" ")).slice(0, limit);
+    candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" "), { targetVenues: options.targetVenues }).slice(0, limit);
   }
   const warnings = results.flatMap((result) => result.warnings);
   if (candidates.length < gate) warnings.push(`Only ${candidates.length} candidates found after expanded recall queries; at least ${gate} core papers are required before novelty judgment.`);
@@ -50,9 +50,9 @@ ${queries.map((query) => `- ${query}`).join("\n") || "- none"}
 
 ## Candidates
 
-| Rank | Title | Year | Venue | Sources | Score | PDF |
-| ---: | --- | ---: | --- | --- | ---: | --- |
-${(candidates.length ? candidates : []).map((candidate, index) => `| ${index + 1} | ${escapeCell(candidate.title)} | ${candidate.year ?? ""} | ${escapeCell(candidate.venue ?? "")} | ${candidate.retrieval_sources.join("; ")} | ${candidate.relevance_score ?? ""} | ${candidate.pdf_urls.length ? "yes" : "no"} |`).join("\n") || "|  | No candidates yet |  |  |  |  |  |"}
+| Rank | Title | Year | Venue | CCF | Match | Track | Novelty Risk | Sources | Score | PDF | Reason |
+| ---: | --- | ---: | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
+${(candidates.length ? candidates : []).map((candidate, index) => `| ${index + 1} | ${escapeCell(candidate.title)} | ${candidate.year ?? ""} | ${escapeCell(candidate.venue ?? "")} | ${candidate.ccf_rank ?? "unknown"} | ${candidate.venue_match ?? "unknown"} | ${candidate.track_status ?? "unknown"} | ${candidate.novelty_risk ?? "unknown"} | ${candidate.retrieval_sources.join("; ")} | ${candidate.relevance_score ?? ""} | ${candidate.pdf_status ?? (candidate.pdf_urls.length ? "available" : "unavailable")} | ${escapeCell(candidate.reason ?? "")} |`).join("\n") || "|  | No candidates yet |  |  |  |  |  |  |  |  |  |  |"}
 
 ## Warnings
 

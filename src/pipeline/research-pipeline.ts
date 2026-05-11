@@ -40,6 +40,7 @@ import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from
 import { assessNovelty, noveltyMatrixMarkdown } from "../skills/analysis/novelty-matrix.js";
 import { relatedWorkMatrixCsv, topicClustersMarkdown } from "../skills/analysis/related-work-matrix.js";
 import type { LiteratureSource, PaperCandidate } from "../skills/literature/types.js";
+import { enrichCandidates } from "../skills/literature/venue.js";
 import type { PdfChunkIndexEntry } from "../skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
 import { pdfChunksEqual, validateDownloadedPdfManifest } from "../skills/pdf/trust.js";
@@ -320,7 +321,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   let searchReport: string;
   const resumedCandidates = await readJsonArtifact<PaperCandidate[]>(readArtifact, "docs/relative_work/candidates.json");
   if ((await canResumeStage("literature_search")) && resumedCandidates) {
-    candidates = resumedCandidates;
+    candidates = enrichCandidates(resumedCandidates, { idea, targetVenues: venues });
     searchReport = (await readArtifact("docs/relative_work/search_report.md")) ?? "# Literature Search Report\n\nResumed from candidate artifacts.\n";
   } else {
     await setStage("literature_search", "running");
@@ -330,10 +331,11 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       allowNetwork: Boolean(options.allowNetwork),
       limit: options.maxPapers ?? 20,
       idea,
+      targetVenues: venues,
       sources: options.sources as LiteratureSource[] | undefined
     }, toolContext);
     warnings.push(...literature.warnings);
-    candidates = literature.candidates;
+    candidates = enrichCandidates(literature.candidates, { idea, targetVenues: venues });
     searchReport = literature.search_report;
     for (const candidate of candidates) {
       await emitRuntimeEvent({
@@ -345,8 +347,12 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
         venue: candidate.venue,
         year: candidate.year,
         relevance_score: candidate.relevance_score,
-        novelty_risk: "unknown",
-        pdf_status: candidate.pdf_urls.length ? "available" : "unavailable",
+        ccf_rank: candidate.ccf_rank,
+        venue_match: candidate.venue_match,
+        track_status: candidate.track_status,
+        novelty_risk: candidate.novelty_risk ?? "unknown",
+        pdf_status: candidate.pdf_status ?? (candidate.pdf_urls.length ? "available" : "unavailable"),
+        reason: candidate.reason,
         timestamp: runtimeTimestamp()
       });
     }
@@ -1517,7 +1523,7 @@ function triageReport(candidates: PaperCandidate[]): string {
 - Must-read direct prior work target: ${Math.min(8, candidates.length)}
 - Expanded paper target: ${Math.min(30, Math.max(15, candidates.length))}
 
-${candidates.slice(0, 20).map((candidate, index) => `- ${index + 1}. ${candidate.title} (${candidate.year ?? "n.d."}) — ${candidate.confidence}`).join("\n") || "- No candidates collected yet."}
+${candidates.slice(0, 20).map((candidate, index) => `- ${index + 1}. ${candidate.title} (${candidate.year ?? "n.d."}) — ${candidate.confidence}; ${candidate.ccf_rank ?? "unknown"}; ${candidate.track_status ?? "unknown"}; ${candidate.reason ?? "no enrichment reason"}`).join("\n") || "- No candidates collected yet."}
 `;
 }
 

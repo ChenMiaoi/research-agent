@@ -258,7 +258,7 @@ export function createCoreToolRegistry(): ToolRegistry {
     name: "literature.search",
     description: "Search literature candidates through configured sources.",
     risk: (input) => input.allowNetwork ? ["read", "network"] : ["read"],
-    inputSchema: { type: "object", required: ["queries"], properties: { queries: { type: "array" }, allowNetwork: { type: "boolean" }, limit: { type: "number" } } },
+    inputSchema: { type: "object", required: ["queries"], properties: { queries: { type: "array" }, allowNetwork: { type: "boolean" }, limit: { type: "number" }, targetVenues: { type: "array" } } },
     summarizeInput: (input) => `queries=${(input.queries ?? (input.query ? [input.query] : [])).length}; allow_network=${Boolean(input.allowNetwork)}; limit=${input.limit ?? "default"}`,
     summarizeOutput: (output) => `candidates=${output.candidates.length}; warnings=${output.warnings.length}`,
     handler: (input, ctx) => searchLiteratureAsync({ ...input, signal: ctx.signal })

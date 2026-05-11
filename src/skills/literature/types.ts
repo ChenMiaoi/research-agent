@@ -1,4 +1,9 @@
 export type LiteratureSource = "openalex" | "crossref" | "arxiv" | "dblp" | "semantic-scholar" | "acl-anthology";
+export type CandidateCcfRank = "A" | "B" | "C" | "unknown";
+export type CandidateVenueMatch = "target" | "primary" | "secondary" | "ccf_a" | "known" | "unknown";
+export type CandidateTrackStatus = "main_conference" | "journal" | "workshop" | "demo" | "short_paper" | "unknown";
+export type CandidateNoveltyRisk = "high" | "medium" | "low" | "unknown";
+export type CandidatePdfStatus = "available" | "unavailable" | "needs_approval" | "downloaded";
 
 export type PaperCandidate = {
   candidate_id: string;
@@ -18,6 +23,12 @@ export type PaperCandidate = {
   retrieval_queries: string[];
   confidence: "high" | "medium" | "low";
   relevance_score?: number;
+  ccf_rank?: CandidateCcfRank;
+  venue_match?: CandidateVenueMatch;
+  track_status?: CandidateTrackStatus;
+  novelty_risk?: CandidateNoveltyRisk;
+  reason?: string;
+  pdf_status?: CandidatePdfStatus;
 };
 
 export type LiteratureAdapterOptions = {
@@ -40,6 +51,7 @@ export type LiteratureSearchOptions = {
   sources?: LiteratureSource[];
   limit?: number;
   idea?: string;
+  targetVenues?: string[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 };

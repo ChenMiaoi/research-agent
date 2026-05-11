@@ -6,7 +6,7 @@ export function relatedWorkMatrixCsv(candidates: PaperCandidate[], manifest: Pdf
   const pdfByPaper = new Map(manifest.map((record) => [record.paper_id, record]));
   const evidenceByPaper = new Map(evidenceRows.map((row) => [row.paper_id, row]));
   const rows = [
-    ["paper_id", "title", "year", "venue", "pdf_status", "evidence_page", "evidence_quote", "evidence_chunk_id", "baseline_signal", "dataset_signal", "metric_signal", "collision_risk"],
+    ["paper_id", "title", "year", "venue", "ccf_rank", "venue_match", "track_status", "pdf_status", "evidence_page", "evidence_quote", "evidence_chunk_id", "baseline_signal", "dataset_signal", "metric_signal", "collision_risk"],
     ...candidates.map((candidate) => {
       const paperId = safePaperId(candidate.candidate_id);
       const evidence = evidenceByPaper.get(paperId);
@@ -16,7 +16,10 @@ export function relatedWorkMatrixCsv(candidates: PaperCandidate[], manifest: Pdf
         candidate.title,
         String(candidate.year ?? ""),
         candidate.venue ?? "",
-        pdfByPaper.get(paperId)?.status ?? "not_available",
+        candidate.ccf_rank ?? "unknown",
+        candidate.venue_match ?? "unknown",
+        candidate.track_status ?? "unknown",
+        pdfByPaper.get(paperId)?.status ?? candidate.pdf_status ?? "not_available",
         evidence?.page ?? "",
         evidence?.quote ?? "",
         evidence?.chunk_id ?? "",

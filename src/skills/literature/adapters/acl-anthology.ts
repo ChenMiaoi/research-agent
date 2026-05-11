@@ -14,7 +14,7 @@ export async function searchAclAnthology(options: LiteratureAdapterOptions) {
         title,
         authors: [],
         year: Number(sourceUrl.match(/\/(\d{4})\./)?.[1]) || null,
-        venue: "ACL Anthology",
+        ...aclVenueFields(sourceUrl),
         source_urls: firstUrl(sourceUrl),
         pdf_urls: firstUrl(`${sourceUrl}.pdf`),
         retrieval_sources: ["acl-anthology"],
@@ -27,4 +27,16 @@ export async function searchAclAnthology(options: LiteratureAdapterOptions) {
 
 function stripTags(value: string): string {
   return value.replace(/<[^>]+>/g, " ");
+}
+
+function aclVenueFields(sourceUrl: string): { venue?: string; track_status?: "main_conference" | "workshop" | "short_paper" | "unknown" } {
+  const key = (sourceUrl.match(/\/\d{4}\.([^/]+)\//)?.[1]?.toLowerCase() ?? "").replace(/\.\d+$/, "");
+  if (!key) return {};
+  if (/\b(workshop|ws|w\d+|sigdial|semeval|wmt|blackboxnlp|clinicalnlp|srw|student)\b/.test(key)) return { track_status: "workshop" };
+  if (key.includes("findings") || key.includes("short")) return { track_status: "short_paper" };
+  if (key.includes("demo") || key.includes("tutorial")) return { track_status: "unknown" };
+  if (/^acl-(?:long|main|short|papers)$/.test(key)) return { venue: "ACL", track_status: key.includes("short") ? "short_paper" : "main_conference" };
+  if (/^emnlp-(?:main|long|papers)$/.test(key)) return { venue: "EMNLP", track_status: "main_conference" };
+  if (/^naacl-(?:main|long|papers)$/.test(key)) return { venue: "NAACL", track_status: "main_conference" };
+  return { track_status: "unknown" };
 }

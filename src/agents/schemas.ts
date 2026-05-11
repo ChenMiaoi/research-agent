@@ -179,7 +179,13 @@ export const PaperCandidateSchema = Type.Object(
     abstract: Type.Optional(Type.String()),
     retrieval_sources: Type.Array(Type.String()),
     retrieval_queries: Type.Array(Type.String()),
-    confidence: ConfidenceSchema
+    confidence: ConfidenceSchema,
+    ccf_rank: Type.Optional(Type.Union([Type.Literal("A"), Type.Literal("B"), Type.Literal("C"), Type.Literal("unknown")])),
+    venue_match: Type.Optional(Type.Union([Type.Literal("target"), Type.Literal("primary"), Type.Literal("secondary"), Type.Literal("ccf_a"), Type.Literal("known"), Type.Literal("unknown")])),
+    track_status: Type.Optional(Type.Union([Type.Literal("main_conference"), Type.Literal("journal"), Type.Literal("workshop"), Type.Literal("demo"), Type.Literal("short_paper"), Type.Literal("unknown")])),
+    novelty_risk: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low"), Type.Literal("unknown")])),
+    reason: Type.Optional(Type.String()),
+    pdf_status: Type.Optional(Type.Union([Type.Literal("available"), Type.Literal("unavailable"), Type.Literal("needs_approval"), Type.Literal("downloaded")]))
   },
   { additionalProperties: false }
 );

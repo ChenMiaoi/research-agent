@@ -21,6 +21,12 @@ export function dedupeCandidates(candidates: PaperCandidate[]): PaperCandidate[]
     existing.dblp_key ||= candidate.dblp_key;
     existing.semantic_scholar_id ||= candidate.semantic_scholar_id;
     existing.abstract ||= candidate.abstract;
+    existing.ccf_rank = best(existing.ccf_rank, candidate.ccf_rank, { A: 4, B: 3, C: 2, unknown: 1 });
+    existing.venue_match = best(existing.venue_match, candidate.venue_match, { target: 6, primary: 5, secondary: 4, ccf_a: 3, known: 2, unknown: 1 });
+    existing.track_status = trackStatus(existing.track_status, candidate.track_status);
+    existing.novelty_risk = best(existing.novelty_risk, candidate.novelty_risk, { high: 4, medium: 3, low: 2, unknown: 1 });
+    existing.pdf_status = best(existing.pdf_status, candidate.pdf_status, { downloaded: 4, available: 3, needs_approval: 2, unavailable: 1 });
+    existing.reason = mergeReason(existing.reason, candidate.reason);
     existing.confidence = confidenceRank(existing.confidence) >= confidenceRank(candidate.confidence) ? existing.confidence : candidate.confidence;
   }
   return merged;
@@ -59,6 +65,27 @@ function yearClose(a: number | null, b: number | null): boolean {
 
 function union<T>(a: T[], b: T[]): T[] {
   return [...new Set([...a, ...b])];
+}
+
+function best<T extends string>(left: T | undefined, right: T | undefined, rank: Record<T, number>): T | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return rank[left] >= rank[right] ? left : right;
+}
+
+function trackStatus(
+  left: PaperCandidate["track_status"],
+  right: PaperCandidate["track_status"]
+): PaperCandidate["track_status"] {
+  const rank = { main_conference: 5, journal: 5, unknown: 4, short_paper: 3, demo: 2, workshop: 1 };
+  if (!left) return right;
+  if (!right) return left;
+  return rank[left] <= rank[right] ? left : right;
+}
+
+function mergeReason(left: string | undefined, right: string | undefined): string | undefined {
+  const parts = [...new Set([...(left ? left.split("; ") : []), ...(right ? right.split("; ") : [])].filter(Boolean))];
+  return parts.length ? parts.join("; ") : undefined;
 }
 
 function confidenceRank(value: PaperCandidate["confidence"]): number {

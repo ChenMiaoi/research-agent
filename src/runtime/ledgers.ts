@@ -155,7 +155,7 @@ export function evidenceItemsFromRows(input: {
       title: candidate?.title ?? row.paper_id,
       venue: candidate?.venue,
       year: candidate?.year ?? undefined,
-      ccf_rank: "unknown" as const,
+      ccf_rank: candidate?.ccf_rank ?? "unknown" as const,
       source_url: sourceUrl,
       doi: candidate?.doi,
       arxiv_id: candidate?.arxiv_id,
