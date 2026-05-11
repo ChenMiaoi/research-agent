@@ -22,6 +22,7 @@ import { createZipArchive, type ZipEntry } from "../skills/templates/package.js"
 import { resolveTemplateProfile, templateDecisionMarkdown } from "../skills/templates/resolve.js";
 import { renderPaper } from "../skills/templates/render.js";
 import type { TemplateResolveInput } from "../skills/templates/types.js";
+import { DecisionRecorder } from "../runtime/decisions.js";
 import { runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "../runtime/events.js";
 import { createResearchPipelineState, markStage, readResearchPipelineState, writeResearchPipelineState, type ResearchPipelineState } from "./stage-state.js";
 import { researchStages } from "./stages.js";
@@ -111,6 +112,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   const emitRuntimeEvent = async (event: Idea2RepoEvent): Promise<void> => {
     await options.events?.emit(event);
   };
+  const decisions = options.outputRoot ? new DecisionRecorder(outputRoot, runId, options.events) : null;
+  const recordDecision = async (input: Parameters<DecisionRecorder["record"]>[0]): Promise<void> => {
+    await decisions?.record(input);
+  };
   const setStage = async (id: Parameters<typeof markStage>[1], status: Parameters<typeof markStage>[2], error?: string): Promise<void> => {
     const stage = researchStages.find((candidate) => candidate.id === id);
     const label = stage?.label ?? id;
@@ -158,6 +163,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       warnings,
       "idea intake"
     );
+    await recordDecision({
+      stage_id: "idea_intake",
+      title: "Idea routed for research pipeline",
+      rationale_summary: `Routed the idea to ${ideaBrief.target_domain} with venues ${ideaBrief.target_venues.join(", ") || "auto-selected"}.`,
+      inputs_considered: [idea, ...(options.requestedDomains ?? []), ...(options.resources ?? [])],
+      evidence_refs: [{ artifact: "docs/idea/idea_brief.md" }],
+      alternatives: [{ option: "Defer routing", why_not: "The parsed idea had enough terms to create a deterministic research brief." }],
+      confidence: "medium"
+    });
     await setStage("idea_intake", "completed");
   }
 
@@ -174,6 +188,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       "search planning"
     );
     searchPlan = enforceSearchPlanGate(searchPlan, offlineSearchPlan(ideaBrief, options.maxPapers ?? 20), warnings);
+    await recordDecision({
+      stage_id: "search_planning",
+      title: "Literature search plan selected",
+      rationale_summary: `Selected ${searchPlan.precision_queries.length} precision and ${searchPlan.recall_queries.length} recall queries with baseline, dataset, venue, and collision coverage.`,
+      inputs_considered: [ideaBrief.idea_summary, ideaBrief.target_domain, ...ideaBrief.search_seed_terms],
+      evidence_refs: [{ artifact: "docs/relative_work/search_plan.json" }],
+      alternatives: [{ option: "Use a single broad query", why_not: "The evidence-first pipeline needs separate precision, recall, baseline, dataset, venue, and collision searches." }],
+      confidence: "medium"
+    });
     await setStage("search_planning", "completed");
   }
   searchPlan = enforceSearchPlanGate(searchPlan, offlineSearchPlan(ideaBrief, options.maxPapers ?? 20), warnings);
@@ -339,6 +362,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
           "strict CCF-A scoring"
         )
       : null;
+    await recordDecision({
+      stage_id: "ccf_a_strict_scoring",
+      title: "Strict CCF-A score capped by evidence",
+      rationale_summary: `Strict score is ${score.total}/100 with caps: ${score.caps.map((cap) => cap.reason).join("; ") || "none"}.`,
+      inputs_considered: [`verified_papers=${verifiedPaperCount}`, `pdf_chunks=${chunks.length}`, `collision=${novelty.collision_risk}`],
+      evidence_refs: [{ artifact: "docs/diagnosis/ccf_a_strict_scorecard.md" }, { artifact: "docs/reference/claim_evidence_matrix.csv" }],
+      alternatives: [{ option: "Score from ambition only", why_not: "The strict rubric caps claims without verified related-work and PDF evidence." }],
+      confidence: hasVerifiedPdfEvidence ? "medium" : "high"
+    });
     await setStage("ccf_a_strict_scoring", "completed");
   } else {
     await preserveStageArtifacts("ccf_a_strict_scoring");
@@ -353,6 +385,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       warnings,
       "feasibility review"
     );
+    await recordDecision({
+      stage_id: "feasibility_review",
+      title: "Feasibility constraints reviewed",
+      rationale_summary: `Reviewed feasibility for ${options.timelineWeeks ?? 12} weeks with resources: ${(options.resources ?? []).join(", ") || "unspecified"}.`,
+      inputs_considered: [`timeline_weeks=${options.timelineWeeks ?? 12}`, ...(options.resources ?? [])],
+      evidence_refs: [{ artifact: "docs/diagnosis/feasibility_report.md" }],
+      alternatives: [{ option: "Assume unlimited resources", why_not: "The roadmap requires single-researcher and resource constraints to be modeled explicitly." }],
+      confidence: "medium"
+    });
     await setStage("feasibility_review", "completed");
   } else {
     await preserveStageArtifacts("feasibility_review");
@@ -401,6 +442,15 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       venue: options.venue ?? venues[0],
       domain: route.domain.key,
       strict: Boolean(options.strictCcfA)
+    });
+    await recordDecision({
+      stage_id: "venue_template_packaging",
+      title: "Venue template package selected",
+      rationale_summary: `Selected a venue-aware template package for ${options.venue ?? route.domain.primary_venues[0] ?? "the routed domain"}.`,
+      inputs_considered: [options.venue ?? "auto venue", route.domain.key, Boolean(options.strictCcfA) ? "strict" : "standard"],
+      evidence_refs: [{ artifact: "docs/submission/template_decision.md" }, { artifact: "docs/submission/venue_template_profile.json" }],
+      alternatives: [{ option: "Use generic article only", why_not: "Venue fit and submission readiness require a venue-specific profile when available." }],
+      confidence: "medium"
     });
     await setStage("venue_template_packaging", "completed");
   }

@@ -17,6 +17,7 @@ import { runTui } from "./tui/App.js";
 import { loadCodexModelCatalog } from "./models.js";
 import { proxyEnvForChild } from "./proxy.js";
 import { runResearchPipeline } from "./pipeline/research-pipeline.js";
+import { formatDecisions, readDecisionRecords } from "./runtime/decisions.js";
 import { readJsonlEvents } from "./runtime/events.js";
 import { formatPlan, readPlanState } from "./runtime/plan.js";
 import { normalizeSources } from "./skills/literature/search.js";
@@ -132,6 +133,10 @@ async function commandPlan(argv: string[]): Promise<number> {
 async function commandTrace(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
   const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  if (hasFlag(parsed, "decisions")) {
+    console.log(formatDecisions(await readDecisionRecords(root)));
+    return 0;
+  }
   const limit = numberFlag(parsed, "limit", 20);
   const events = await readJsonlEvents(ensureChild(root, ".idea2repo/trace.jsonl"));
   for (const event of events.slice(-limit)) console.log(JSON.stringify(event));
