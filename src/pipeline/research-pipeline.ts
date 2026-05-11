@@ -50,6 +50,7 @@ import type { PaperRenderInput, PaperRenderResult, TemplateComplianceResult, Tem
 import { ApprovalRecorder, approvalPolicyForMode } from "../runtime/approvals.js";
 import { DecisionRecorder } from "../runtime/decisions.js";
 import { runtimeTimestamp, type EventSink, type Idea2RepoEvent } from "../runtime/events.js";
+import { appendScoreSnapshot, ensureRuntimeLedgers, evidenceItemsFromRows, replaceEvidenceItems, scoreSnapshotFromStrictScore } from "../runtime/ledgers.js";
 import { createCoreToolRegistry, createToolContext, type ToolContext, type ToolRegistry } from "../runtime/tools.js";
 import { CODEX_CLI_PROVIDER_ID, OFFLINE_PROVIDER_ID, apiShapeForProvider, canonicalProvider } from "../providers.js";
 import { createProviderAdapter } from "../providers/index.js";
@@ -131,6 +132,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     recordToolCalls: Boolean(options.outputRoot),
     signal: options.signal
   });
+  if (options.outputRoot) await ensureRuntimeLedgers(outputRoot);
   const restoredState = options.outputRoot ? await readResearchPipelineState(outputRoot) : null;
   if (restoredState && restoredState.idea !== idea) throw new Error(`research pipeline state belongs to a different idea: ${restoredState.idea}`);
   let state = restoredState ?? createResearchPipelineState(idea, options.outputRoot);
@@ -408,6 +410,14 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
 
   const evidenceRows = await toolRegistry.execute<{ chunks: PdfChunkIndexEntry[] }, ReturnType<typeof extractEvidenceRows>>("evidence.extract", { chunks }, toolContext);
   const verifiedEvidenceRows = evidenceRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id);
+  const evidenceItems = evidenceItemsFromRows({
+    runId,
+    stageId: "pdf_reading",
+    rows: evidenceRows,
+    candidates,
+    manifest
+  });
+  if (options.outputRoot) await replaceEvidenceItems(outputRoot, { runId, stageId: "pdf_reading" }, evidenceItems);
   for (const row of verifiedEvidenceRows) {
     await emitRuntimeEvent({
       type: "evidence.extracted",
@@ -526,13 +536,23 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     venueExpectsStrongMlBaselines: /neurips|icml|iclr|acl/i.test(options.venue ?? ""),
     hasStrongMlBaselines: evidence.includes("baseline")
   }, toolContext);
+  const scoreConfidence = hasVerifiedPdfEvidence ? 0.65 : 0.4;
+  if (options.outputRoot) {
+    await appendScoreSnapshot(outputRoot, scoreSnapshotFromStrictScore({
+      runId,
+      stageId: "ccf_a_strict_scoring",
+      score,
+      confidence: scoreConfidence,
+      evidenceRefs: evidenceItems.map((item) => item.id)
+    }));
+  }
   await emitRuntimeEvent({
     type: "score.updated",
     run_id: runId,
     stage_id: "ccf_a_strict_scoring",
     score: score.total,
     max_score: 100,
-    confidence: hasVerifiedPdfEvidence ? 0.65 : 0.4,
+    confidence: scoreConfidence,
     hard_blockers: score.caps.map((cap) => cap.reason),
     timestamp: runtimeTimestamp()
   });

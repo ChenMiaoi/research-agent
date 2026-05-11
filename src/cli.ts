@@ -21,6 +21,7 @@ import { formatDecisions, readDecisionRecords } from "./runtime/decisions.js";
 import { JsonlEventSink, readJsonlEvents } from "./runtime/events.js";
 import { formatPlan, readPlanState } from "./runtime/plan.js";
 import { formatSnapshots, listArtifactSnapshots, restoreArtifactSnapshot } from "./runtime/artifacts.js";
+import { appendScoreSnapshot, ensureRuntimeLedgers, evidenceItemsFromRows, replaceEvidenceItems, scoreSnapshotFromStrictScore } from "./runtime/ledgers.js";
 import { retryRuntimeStage, skipRuntimeStage } from "./runtime/runs.js";
 import type { ResearchStageId } from "./pipeline/stages.js";
 import { createProviderAdapter } from "./providers/index.js";
@@ -212,6 +213,9 @@ async function commandPapers(argv: string[]): Promise<number> {
   const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
   const { manifest, chunks, warnings } = await trustedPdfChunksFromProject(root);
   const evidenceRows = extractEvidenceRows(chunks);
+  const runId = "cli-analysis";
+  await ensureRuntimeLedgers(root);
+  await replaceEvidenceItems(root, { runId, stageId: "pdf_reading" }, evidenceItemsFromRows({ runId, stageId: "pdf_reading", rows: evidenceRows, candidates, manifest }));
   await writeText(ensureChild(root, "docs/reference/pdf_chunks.json"), JSON.stringify(chunks, null, 2) + "\n");
   await writeText(ensureChild(root, "docs/reference/claim_evidence_matrix.csv"), evidenceRowsCsv(evidenceRows));
   for (const [relativePath, content] of Object.entries(evidenceRowsMarkdown(evidenceRows))) await writeText(ensureChild(root, relativePath), content);
@@ -231,8 +235,10 @@ async function commandScore(argv: string[]): Promise<number> {
   const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
   const idea = await ideaFromArgsOrManifest(parsed, root);
   const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
-  const { chunks, warnings } = await trustedPdfChunksFromProject(root);
+  const { manifest, chunks, warnings } = await trustedPdfChunksFromProject(root);
   const evidenceRows = extractEvidenceRows(chunks);
+  const runId = "cli-analysis";
+  const evidenceItems = evidenceItemsFromRows({ runId, stageId: "pdf_reading", rows: evidenceRows, candidates, manifest });
   const text = evidenceText(evidenceRows);
   const novelty = assessNovelty(idea, candidates, evidenceRows);
   const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
@@ -255,6 +261,14 @@ async function commandScore(argv: string[]): Promise<number> {
     venueExpectsStrongMlBaselines: /neurips|icml|iclr|acl/i.test(stringFlag(parsed, "venue") ?? ""),
     hasStrongMlBaselines: text.includes("baseline")
   });
+  await ensureRuntimeLedgers(root);
+  await replaceEvidenceItems(root, { runId, stageId: "pdf_reading" }, evidenceItems);
+  await appendScoreSnapshot(root, scoreSnapshotFromStrictScore({
+    runId,
+    stageId: "ccf_a_strict_scoring",
+    score,
+    evidenceRefs: evidenceItems.map((item) => item.id)
+  }));
   if (warnings.length) console.log(`Warnings: ${warnings.length}`);
   await writeText(ensureChild(root, "docs/diagnosis/ccf_a_strict_scorecard.md"), strictScoreMarkdown(score));
   console.log(`Strict CCF-A score: ${score.total} / 100`);

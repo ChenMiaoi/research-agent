@@ -58,6 +58,14 @@ test("CLI research --jsonl-events writes trace.jsonl", async () => {
     assert.equal(runState.last_event_type, "run.completed");
     assert.equal(runState.result?.project_name, "project");
     assert.ok(runState.event_count > 0);
+    assert.equal(await readFile(join(output, ".idea2repo", "evidence.jsonl"), "utf8"), "");
+    const scoreSnapshots = (await readFile(join(output, ".idea2repo", "score_snapshots.jsonl"), "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { score: number; hard_blockers: string[] });
+    assert.equal(scoreSnapshots.at(-1)?.score, 45);
+    assert.ok(scoreSnapshots.at(-1)?.hard_blockers.includes("No PDF read"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
