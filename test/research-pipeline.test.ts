@@ -53,6 +53,10 @@ test("offline research pipeline returns resumable stage state and core artifacts
 test("research pipeline respects evidence gates for staged agents", async () => {
   const calls: string[] = [];
   const agent = {
+    intakeIdea: async () => {
+      calls.push("intakeIdea");
+      return withAgentMeta({ idea_brief: sampleIdeaBrief() });
+    },
     planLiteratureSearch: async () => {
       calls.push("planLiteratureSearch");
       return withAgentMeta({ search_plan: sampleSearchPlan() });
@@ -140,7 +144,7 @@ test("research pipeline respects evidence gates for staged agents", async () => 
     agentClient: agent,
     strictCcfA: true
   });
-  assert.deepEqual(calls, ["planLiteratureSearch", "reviewFeasibility"]);
+  assert.deepEqual(calls, ["intakeIdea", "planLiteratureSearch", "reviewFeasibility"]);
   assert.equal(result.searchPlan.precision_queries[0]?.query, "agent benchmark precision");
   assert.doesNotMatch(result.artifacts["docs/proposal/revised_idea.md"] ?? "", /Evidence-gated benchmark/);
   assert.equal(result.state.stages.find((stage) => stage.id === "better_idea_synthesis")?.status, "skipped");
@@ -202,6 +206,103 @@ test("research pipeline resumes completed stages from validated artifacts", asyn
     assert.equal(result.searchPlan.precision_queries[0]?.query, "agent benchmark precision");
     assert.equal(calls.includes("planLiteratureSearch"), false);
     assert.equal(result.state.stages.find((stage) => stage.id === "search_planning")?.status, "completed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline repairs underspecified staged search plans", async () => {
+  const calls: string[] = [];
+  const agent = {
+    ...noEvidenceAgent(calls),
+    planLiteratureSearch: async () => {
+      calls.push("planLiteratureSearch");
+      return withAgentMeta({
+        search_plan: {
+          ...sampleSearchPlan(),
+          precision_queries: [{ query: "too narrow", source_hints: ["openalex"], purpose: "test" }],
+          recall_queries: [{ query: "too broad", source_hints: ["openalex"], purpose: "test" }]
+        }
+      });
+    }
+  };
+  const result = await runResearchPipeline("Build an LLM agent benchmark.", {
+    provider: "openai-codex",
+    agentClient: agent,
+    strictCcfA: true
+  });
+  assert.equal(result.searchPlan.precision_queries.length >= 5, true);
+  assert.equal(result.searchPlan.recall_queries.length >= 5, true);
+  assert.match(result.warnings.join("\n"), /Search planning gate repaired/);
+});
+
+test("research pipeline blocks candidate triage until eight core candidates exist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-triage-gate-"));
+  const idea = "Build an LLM agent benchmark.";
+  try {
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify([
+      {
+        candidate_id: "paper-1",
+        title: "Agent Benchmark Evaluation",
+        authors: ["A. Researcher"],
+        year: 2026,
+        source_urls: ["https://example.test/paper"],
+        pdf_urls: [],
+        retrieval_sources: ["test"],
+        retrieval_queries: ["agent benchmark"],
+        confidence: "high"
+      }
+    ], null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    await writeResearchPipelineState(root, state);
+    const calls: string[] = [];
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "openai-codex",
+      agentClient: noEvidenceAgent(calls),
+      strictCcfA: true
+    });
+    assert.equal(calls.includes("triagePaperCandidates"), false);
+    assert.equal(result.state.stages.find((stage) => stage.id === "candidate_triage")?.status, "skipped");
+    assert.match(result.warnings.join("\n"), /Candidate triage gate blocked/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline blocks resumed candidate triage below eight candidates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-triage-resume-gate-"));
+  const idea = "Build an LLM agent benchmark.";
+  try {
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify([
+      {
+        candidate_id: "paper-1",
+        title: "Agent Benchmark Evaluation",
+        authors: ["A. Researcher"],
+        year: 2026,
+        source_urls: ["https://example.test/paper"],
+        pdf_urls: [],
+        retrieval_sources: ["test"],
+        retrieval_queries: ["agent benchmark"],
+        confidence: "high"
+      }
+    ], null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n");
+    await writeArtifact(root, "docs/relative_work/triage_report.md", "# STALE_TRIAGE\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    state = markStage(state, "candidate_triage", "completed");
+    await writeResearchPipelineState(root, state);
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "offline",
+      strictCcfA: true
+    });
+    assert.equal(result.state.stages.find((stage) => stage.id === "candidate_triage")?.status, "skipped");
+    assert.doesNotMatch(result.artifacts["docs/relative_work/triage_report.md"] ?? "", /STALE_TRIAGE/);
+    assert.match(result.warnings.join("\n"), /Candidate triage gate blocked/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -713,6 +814,10 @@ function withAgentMeta<T extends object>(value: T): T & { provider_id: string; a
 
 function noEvidenceAgent(calls: string[]) {
   return {
+    intakeIdea: async () => {
+      calls.push("intakeIdea");
+      return withAgentMeta({ idea_brief: sampleIdeaBrief() });
+    },
     planLiteratureSearch: async () => {
       calls.push("planLiteratureSearch");
       return withAgentMeta({ search_plan: sampleSearchPlan() });
@@ -766,6 +871,22 @@ function noEvidenceAgent(calls: string[]) {
       calls.push("refineIdea");
       throw new Error("strategy should be evidence-gated");
     }
+  };
+}
+
+function sampleIdeaBrief() {
+  return {
+    idea_summary: "Build an LLM agent benchmark.",
+    problem: "agent evaluation",
+    target_domain: "AI / LLM Agent",
+    target_venues: ["NeurIPS"],
+    method_keywords: ["agent"],
+    task_keywords: ["benchmark"],
+    evaluation_keywords: ["baseline", "dataset", "metric"],
+    resource_constraints: ["single researcher"],
+    missing_information: [],
+    assumptions: ["test"],
+    search_seed_terms: ["agent", "benchmark"]
   };
 }
 

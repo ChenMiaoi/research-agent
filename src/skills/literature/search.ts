@@ -24,14 +24,19 @@ export async function searchLiteratureDeterministic(options: LiteratureSearchOpt
   const fetchImpl = options.fetchImpl ?? fetch;
   const perSourceLimit = Math.max(1, Math.ceil(limit / Math.max(1, Math.min(queries.length * sources.length, limit))));
   const results: LiteratureAdapterResult[] = [];
-  for (const query of queries) {
-    const adapterOptions: LiteratureAdapterOptions = { query, limit: perSourceLimit, fetchImpl };
-    for (const source of sources) results.push(await runAdapter(source, adapterOptions));
+  let executedQueries = queries;
+  await runQueries(queries, sources, perSourceLimit, fetchImpl, results);
+  const gate = Math.min(8, limit);
+  let candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" ")).slice(0, limit);
+  if (candidates.length < gate) {
+    const expandedQueries = expandedRecallQueries(queries);
+    executedQueries = [...queries, ...expandedQueries];
+    await runQueries(expandedQueries, sources, perSourceLimit, fetchImpl, results);
+    candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" ")).slice(0, limit);
   }
   const warnings = results.flatMap((result) => result.warnings);
-  const candidates = rankCandidates(dedupeCandidates(results.flatMap((result) => result.candidates)), options.idea ?? queries.join(" ")).slice(0, limit);
-  if (candidates.length < Math.min(8, limit)) warnings.push(`Only ${candidates.length} candidates found; expand recall queries before novelty judgment.`);
-  return { candidates, warnings, search_report: searchReport(candidates, queries, warnings) };
+  if (candidates.length < gate) warnings.push(`Only ${candidates.length} candidates found after expanded recall queries; at least ${gate} core papers are required before novelty judgment.`);
+  return { candidates, warnings, search_report: searchReport(candidates, executedQueries, warnings) };
 }
 
 export function searchReport(candidates: PaperCandidate[], queries: string[], warnings: string[] = []): string {
@@ -64,6 +69,23 @@ async function runAdapter(source: LiteratureSource, options: LiteratureAdapterOp
   if (source === "dblp") return searchDblp(options);
   if (source === "semantic-scholar") return searchSemanticScholar(options);
   return searchAclAnthology(options);
+}
+
+async function runQueries(queries: string[], sources: LiteratureSource[], perSourceLimit: number, fetchImpl: typeof fetch, results: LiteratureAdapterResult[]): Promise<void> {
+  for (const query of queries) {
+    const adapterOptions: LiteratureAdapterOptions = { query, limit: perSourceLimit, fetchImpl };
+    for (const source of sources) results.push(await runAdapter(source, adapterOptions));
+  }
+}
+
+function expandedRecallQueries(queries: string[]): string[] {
+  const expanded = queries.flatMap((query) => [
+    `${query} survey`,
+    `${query} baseline dataset metric`,
+    `${query} related work benchmark`
+  ]);
+  const original = new Set(queries.map((query) => query.toLowerCase()));
+  return [...new Set(expanded.map((query) => query.trim()).filter(Boolean))].filter((query) => !original.has(query.toLowerCase()));
 }
 
 export function normalizeSources(sources: LiteratureSource[] | undefined): LiteratureSource[] {

@@ -10,6 +10,7 @@ import { buildAgentPrompt, stagedAgentInstructions, type AgentPromptFile } from 
 import {
   validateCandidateTriage,
   validateFeasibilityReview,
+  validateIdeaBrief,
   validateNoveltyGapAnalysis,
   validatePdfPaperNote,
   validateRelatedWorkAnalysis,
@@ -18,6 +19,7 @@ import {
   validateStrictCcfAReview,
   type CandidateTriage,
   type FeasibilityReview,
+  type IdeaBrief,
   type NoveltyGapAnalysis,
   type PdfPaperNote,
   type RelatedWorkAnalysis,
@@ -330,6 +332,15 @@ export class CodexOAuthClient {
     const payload = responsesPayload(prompt, researchInstructions(), this.model(), this.options.reasoningEffort);
     const { parsed, events } = await this.requestStructured(payload, validateResearchAnalysis, options.progress);
     return { analysis: parsed, provider_id: OPENAI_CODEX_PROVIDER_ID, api_shape: OPENAI_CODEX_API_SHAPE, codex_model: this.model(), events };
+  }
+
+  async intakeIdea(
+    idea: string,
+    context: { requestedDomains?: string[]; targetVenues?: string[]; timelineWeeks?: number; resources?: string[] } = {},
+    progress?: (message: string) => void
+  ): Promise<{ idea_brief: IdeaBrief; provider_id: string; api_shape: string; codex_model: string; events: unknown[] }> {
+    const { parsed, events } = await this.runStagedAgent("00_intake_router.md", "Convert the idea into a precise search-ready research brief.", { idea, ...context }, validateIdeaBrief, "IdeaBrief", progress);
+    return { idea_brief: parsed, provider_id: OPENAI_CODEX_PROVIDER_ID, api_shape: OPENAI_CODEX_API_SHAPE, codex_model: this.model(), events };
   }
 
   async planLiteratureSearch(

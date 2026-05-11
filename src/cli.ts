@@ -23,6 +23,7 @@ import { acquirePdfs } from "./skills/pdf/acquire.js";
 import { buildPdfChunkIndex } from "./skills/pdf/chunk.js";
 import type { PdfChunkIndexEntry } from "./skills/pdf/chunk.js";
 import type { PdfManifestRecord } from "./skills/pdf/provenance.js";
+import { rebuildTrustedPdfChunks } from "./skills/pdf/trust.js";
 import type { PaperCandidate } from "./skills/literature/types.js";
 import { evidenceRowsMarkdown, evidenceText, extractEvidenceRows, evidenceRowsCsv } from "./skills/analysis/evidence-extract.js";
 import { relatedWorkMatrixCsv, topicClustersMarkdown } from "./skills/analysis/related-work-matrix.js";
@@ -121,9 +122,9 @@ async function commandPapers(argv: string[]): Promise<number> {
   const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
   if (action !== "analyze") throw new Error(`unknown papers action: ${action}`);
   const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
-  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
-  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const { manifest, chunks, warnings } = await trustedPdfChunksFromProject(root);
   const evidenceRows = extractEvidenceRows(chunks);
+  await writeText(ensureChild(root, "docs/reference/pdf_chunks.json"), JSON.stringify(chunks, null, 2) + "\n");
   await writeText(ensureChild(root, "docs/reference/claim_evidence_matrix.csv"), evidenceRowsCsv(evidenceRows));
   for (const [relativePath, content] of Object.entries(evidenceRowsMarkdown(evidenceRows))) await writeText(ensureChild(root, relativePath), content);
   await writeText(ensureChild(root, "docs/relative_work/related_work_matrix.csv"), relatedWorkMatrixCsv(candidates, manifest, evidenceRows));
@@ -133,6 +134,7 @@ async function commandPapers(argv: string[]): Promise<number> {
   await writeText(ensureChild(root, "docs/relative_work/collision_risk.md"), `# Collision Risk\n\n${novelty.collision_risk}\n\n${novelty.reasons.map((reason) => `- ${reason}`).join("\n")}\n`);
   console.log(`Paper analysis written under ${ensureChild(root, "docs/relative_work")}`);
   console.log(`Evidence rows: ${evidenceRows.length}`);
+  if (warnings.length) console.log(`Warnings: ${warnings.length}`);
   return 0;
 }
 
@@ -141,8 +143,7 @@ async function commandScore(argv: string[]): Promise<number> {
   const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
   const idea = await ideaFromArgsOrManifest(parsed, root);
   const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
-  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
-  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const { chunks, warnings } = await trustedPdfChunksFromProject(root);
   const evidenceRows = extractEvidenceRows(chunks);
   const text = evidenceText(evidenceRows);
   const novelty = assessNovelty(idea, candidates, evidenceRows);
@@ -166,7 +167,7 @@ async function commandScore(argv: string[]): Promise<number> {
     venueExpectsStrongMlBaselines: /neurips|icml|iclr|acl/i.test(stringFlag(parsed, "venue") ?? ""),
     hasStrongMlBaselines: text.includes("baseline")
   });
-  void manifest;
+  if (warnings.length) console.log(`Warnings: ${warnings.length}`);
   await writeText(ensureChild(root, "docs/diagnosis/ccf_a_strict_scorecard.md"), strictScoreMarkdown(score));
   console.log(`Strict CCF-A score: ${score.total} / 100`);
   console.log(`Scorecard written: ${ensureChild(root, "docs/diagnosis/ccf_a_strict_scorecard.md")}`);
@@ -178,8 +179,7 @@ async function commandRefine(argv: string[]): Promise<number> {
   const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
   const idea = await ideaFromArgsOrManifest(parsed, root);
   const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
-  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
-  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const { chunks, warnings } = await trustedPdfChunksFromProject(root);
   const evidenceRows = extractEvidenceRows(chunks);
   const novelty = assessNovelty(idea, candidates, evidenceRows);
   const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
@@ -194,7 +194,7 @@ async function commandRefine(argv: string[]): Promise<number> {
     highPriorWorkCollision: novelty.collision_risk === "high",
     hasExecutableExperimentPlan: false
   });
-  void manifest;
+  if (warnings.length) console.log(`Warnings: ${warnings.length}`);
   await writeText(ensureChild(root, "docs/proposal/revised_idea.md"), revisedIdeaMarkdown(idea, novelty, score));
   await writeText(ensureChild(root, "docs/proposal/experiment_plan.md"), experimentPlanMarkdown());
   await writeText(ensureChild(root, "docs/diagnosis/feasibility_report.md"), feasibilityMarkdown(valuesFlag(parsed, "resource"), numberFlag(parsed, "weeks", 12)));
@@ -671,11 +671,31 @@ async function queriesFromArgsOrPlan(parsed: ParsedArgs, root: string): Promise<
     const plan = JSON.parse(await readFile(planPath, "utf8")) as {
       precision_queries?: Array<{ query?: string }>;
       recall_queries?: Array<{ query?: string }>;
+      baseline_queries?: Array<{ query?: string }>;
+      dataset_metric_queries?: Array<{ query?: string }>;
+      venue_queries?: Array<{ query?: string }>;
+      collision_queries?: Array<{ query?: string }>;
     };
-    const queries = [...(plan.precision_queries ?? []), ...(plan.recall_queries ?? [])].map((entry) => entry.query?.trim() ?? "").filter(Boolean);
+    const queries = [
+      ...(plan.precision_queries ?? []),
+      ...(plan.recall_queries ?? []),
+      ...(plan.baseline_queries ?? []),
+      ...(plan.dataset_metric_queries ?? []),
+      ...(plan.venue_queries ?? []),
+      ...(plan.collision_queries ?? [])
+    ].map((entry) => entry.query?.trim() ?? "").filter(Boolean);
     if (queries.length) return queries;
   }
   return ["research agent benchmark baseline dataset metric"];
+}
+
+async function trustedPdfChunksFromProject(root: string): Promise<{ manifest: PdfManifestRecord[]; chunks: PdfChunkIndexEntry[]; warnings: string[] }> {
+  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
+  const storedChunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const trusted = await rebuildTrustedPdfChunks(root, manifest, storedChunks);
+  const trustedPaperIds = new Set(trusted.chunks.map((chunk) => chunk.paper_id));
+  const safeManifest = manifest.filter((record) => record.status !== "downloaded" || trustedPaperIds.has(record.paper_id));
+  return { manifest: safeManifest, chunks: trusted.chunks, warnings: trusted.warnings };
 }
 
 async function readJsonFile<T>(root: string, relativePath: string, fallback: T): Promise<T> {

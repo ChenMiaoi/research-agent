@@ -52,11 +52,12 @@ test("literature search orchestrates mocked adapters without real network", asyn
     idea: "agent benchmark evaluation",
     fetchImpl
   });
-  assert.equal(seen.length, 2);
+  assert.equal(seen.length >= 2, true);
   assert.equal(result.candidates.length, 1);
   assert.equal(result.candidates[0]?.doi, "10.1000/agent");
   assert.equal(result.candidates[0]?.retrieval_sources.sort().join(","), "crossref,openalex");
   assert.match(result.search_report, /Agent Benchmark Evaluation/);
+  assert.match(result.search_report, /baseline dataset metric/);
   const record = paperCandidateToRecord(result.candidates[0]!, 0);
   assert.equal(record.title, "Agent Benchmark Evaluation");
   assert.equal(record.authors[0], "Ada Lovelace");

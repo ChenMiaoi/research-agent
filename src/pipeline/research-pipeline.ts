@@ -14,7 +14,8 @@ import { searchLiteratureAsync } from "../literature.js";
 import type { LiteratureSource, PaperCandidate } from "../skills/literature/types.js";
 import { acquirePdfs } from "../skills/pdf/acquire.js";
 import { buildPdfChunkIndex, type PdfChunkIndexEntry } from "../skills/pdf/chunk.js";
-import { sha256, type PdfManifestRecord } from "../skills/pdf/provenance.js";
+import type { PdfManifestRecord } from "../skills/pdf/provenance.js";
+import { pdfChunksEqual, validateDownloadedPdfManifest } from "../skills/pdf/trust.js";
 import { anonymityMarkdown, checkTemplateComplianceArtifacts, complianceMarkdown } from "../skills/templates/compliance.js";
 import { createZipArchive, type ZipEntry } from "../skills/templates/package.js";
 import { resolveTemplateProfile, templateDecisionMarkdown } from "../skills/templates/resolve.js";
@@ -25,7 +26,7 @@ import { researchStages } from "./stages.js";
 
 export type StagedResearchAgent = Pick<
   CodexOAuthClient,
-  "planLiteratureSearch" | "triagePaperCandidates" | "readPaperPdf" | "analyzeRelatedWork" | "analyzeNovelty" | "scoreCcfA" | "reviewFeasibility" | "refineIdea"
+  "intakeIdea" | "planLiteratureSearch" | "triagePaperCandidates" | "readPaperPdf" | "analyzeRelatedWork" | "analyzeNovelty" | "scoreCcfA" | "reviewFeasibility" | "refineIdea"
 >;
 
 type PipelineTemplatePackage = {
@@ -130,6 +131,12 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     ideaBrief = parseIdeaBriefArtifact((await readArtifact("docs/idea/idea_brief.md")) ?? "") ?? deterministicIdeaBrief;
   } else {
     await setStage("idea_intake", "running");
+    ideaBrief = await stagedOrFallback(
+      () => agent?.intakeIdea(idea, { requestedDomains: options.requestedDomains, targetVenues: venues, timelineWeeks: options.timelineWeeks, resources: options.resources }, options.progress).then((result) => result.idea_brief),
+      () => deterministicIdeaBrief,
+      warnings,
+      "idea intake"
+    );
     await setStage("idea_intake", "completed");
   }
 
@@ -145,8 +152,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       warnings,
       "search planning"
     );
+    searchPlan = enforceSearchPlanGate(searchPlan, offlineSearchPlan(ideaBrief, options.maxPapers ?? 20), warnings);
     await setStage("search_planning", "completed");
   }
+  searchPlan = enforceSearchPlanGate(searchPlan, offlineSearchPlan(ideaBrief, options.maxPapers ?? 20), warnings);
 
   let candidates: PaperCandidate[];
   let searchReport: string;
@@ -171,9 +180,13 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   }
 
   let agentTriage: CandidateTriage | null = null;
-  if (!(await canResumeStage("candidate_triage"))) {
+  const candidateTriageGatePassed = candidates.length >= 8;
+  if (candidates.length > 0 && !candidateTriageGatePassed) warnings.push(`Candidate triage gate blocked: ${candidates.length} candidates found; at least 8 core papers are required before triage.`);
+  if ((await canResumeStage("candidate_triage")) && candidateTriageGatePassed) {
+    await preserveStageArtifacts("candidate_triage");
+  } else {
     await setStage("candidate_triage", "running");
-    agentTriage = candidates.length
+    agentTriage = candidateTriageGatePassed
       ? await stagedOrFallback(
           () => agent?.triagePaperCandidates(idea, candidates, options.progress).then((result) => result.triage),
           () => null,
@@ -181,16 +194,16 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
           "candidate triage"
         )
       : null;
-    await setStage("candidate_triage", candidates.length ? "completed" : "skipped", candidates.length ? undefined : "No literature candidates were collected.");
+    await setStage("candidate_triage", candidateTriageGatePassed ? "completed" : "skipped", candidateTriageGatePassed ? undefined : candidates.length ? "At least 8 core papers are required before triage." : "No literature candidates were collected.");
   }
 
   let manifest: PdfManifestRecord[];
   const resumedManifest = await readJsonArtifact<PdfManifestRecord[]>(readArtifact, "docs/reference/pdf_manifest.json");
-  if ((await canResumeStage("pdf_acquisition")) && resumedManifest && (await manifestDownloadedPdfsAreValid(outputRoot, resumedManifest))) {
+  if ((await canResumeStage("pdf_acquisition")) && resumedManifest && (await validateDownloadedPdfManifest(outputRoot, resumedManifest))) {
     manifest = resumedManifest;
     await preserveStageArtifacts("pdf_acquisition");
   } else {
-    if (resumedManifest && !(await manifestDownloadedPdfsAreValid(outputRoot, resumedManifest))) {
+    if (resumedManifest && !(await validateDownloadedPdfManifest(outputRoot, resumedManifest))) {
       warnings.push("PDF acquisition resume ignored because one or more downloaded PDF records failed provenance validation.");
     }
     await setStage("pdf_acquisition", "running");
@@ -512,6 +525,34 @@ function searchPlanQueries(searchPlan: SearchPlan): string[] {
   ].map((entry) => entry.query);
 }
 
+function enforceSearchPlanGate(plan: SearchPlan, fallback: SearchPlan, warnings: string[]): SearchPlan {
+  const precisionQueries = fillQueryGate(plan.precision_queries, fallback.precision_queries);
+  const recallQueries = fillQueryGate(plan.recall_queries, fallback.recall_queries);
+  if (plan.precision_queries.length < 5 || plan.recall_queries.length < 5) {
+    warnings.push(`Search planning gate repaired: precision=${plan.precision_queries.length}, recall=${plan.recall_queries.length}; at least 5 of each are required.`);
+  }
+  return {
+    ...plan,
+    precision_queries: precisionQueries,
+    recall_queries: recallQueries,
+    baseline_queries: plan.baseline_queries.length ? plan.baseline_queries : fallback.baseline_queries,
+    dataset_metric_queries: plan.dataset_metric_queries.length ? plan.dataset_metric_queries : fallback.dataset_metric_queries,
+    venue_queries: plan.venue_queries.length ? plan.venue_queries : fallback.venue_queries,
+    collision_queries: plan.collision_queries.length ? plan.collision_queries : fallback.collision_queries
+  };
+}
+
+function fillQueryGate<T extends { query: string }>(queries: T[], fallback: T[]): T[] {
+  const seen = new Set<string>();
+  const merged = [...queries, ...fallback].filter((entry) => {
+    const query = entry.query.trim().toLowerCase();
+    if (!query || seen.has(query)) return false;
+    seen.add(query);
+    return true;
+  });
+  return merged.slice(0, Math.max(5, queries.length));
+}
+
 function stageArtifactPaths(id: Parameters<typeof markStage>[1], extraArtifacts: string[] = []): string[] {
   const stage = researchStages.find((candidate) => candidate.id === id);
   return [...new Set([...(stage?.artifactPaths ?? []), ...extraArtifacts])];
@@ -540,44 +581,6 @@ function preservedPaperNoteArtifacts(artifacts: Record<string, string>, trustedP
   return Object.fromEntries(
     Object.entries(artifacts).filter(([path]) => trustedPaths.has(path))
   );
-}
-
-function pdfChunksEqual(left: PdfChunkIndexEntry[], right: PdfChunkIndexEntry[]): boolean {
-  if (left.length !== right.length) return false;
-  const normalize = (chunk: PdfChunkIndexEntry) => JSON.stringify({
-    paper_id: chunk.paper_id,
-    chunk_id: chunk.chunk_id,
-    page: chunk.page,
-    text: chunk.text
-  });
-  const leftRows = left.map(normalize).sort();
-  const rightRows = right.map(normalize).sort();
-  return leftRows.every((row, index) => row === rightRows[index]);
-}
-
-async function manifestDownloadedPdfsAreValid(root: string, manifest: PdfManifestRecord[]): Promise<boolean> {
-  for (const record of manifest) {
-    if (record.status !== "downloaded" || !record.pdf_path) continue;
-    if (
-      !record.pdf_sha256 ||
-      !record.source_url ||
-      !record.downloaded_at ||
-      !record.license_hint ||
-      typeof record.bytes !== "number" ||
-      typeof record.title_match_score !== "number"
-    ) {
-      return false;
-    }
-    let buffer: Buffer;
-    try {
-      buffer = await readFile(join(root, record.pdf_path));
-    } catch {
-      return false;
-    }
-    if (buffer.byteLength !== record.bytes) return false;
-    if (sha256(buffer) !== record.pdf_sha256) return false;
-  }
-  return true;
 }
 
 async function paperNotesFromArtifacts(readArtifact: (relativePath: string) => Promise<string | null>, chunks: PdfChunkIndexEntry[], trustedPaths: Set<string>): Promise<PdfPaperNote[]> {

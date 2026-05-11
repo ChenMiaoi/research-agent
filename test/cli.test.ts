@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,7 +22,11 @@ test("CLI supports legacy idea invocation and project commands", async () => {
     );
     assert.equal(await main(["status", "--output", output]), 0);
     assert.equal(await main(["literature", "plan", "Agent benchmark with baselines", "--output", output]), 0);
-    assert.equal(await main(["literature", "search", "--output", output, "--query", "agent benchmark"]), 0);
+    assert.equal(await main(["literature", "search", "--output", output]), 0);
+    const searchReport = await readFile(join(output, "docs/relative_work/search_report.md"), "utf8");
+    assert.match(searchReport, /baseline/);
+    assert.match(searchReport, /dataset metric/);
+    assert.match(searchReport, /prior work/);
     assert.equal(await main(["literature", "download", "--output", output]), 0);
     assert.equal(await main(["validate", "--output", output]), 0);
     assert.equal(await main(["papers", "analyze", "--output", output]), 0);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { main } from "../src/cli.js";
 import { evidenceRowsMarkdown, extractEvidenceRows } from "../src/skills/analysis/evidence-extract.js";
@@ -121,6 +121,80 @@ test("papers analyze score and refine CLI write analysis artifacts", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("papers analyze ignores fabricated chunks without PDF provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-analysis-stale-chunks-"));
+  const output = join(root, "project");
+  try {
+    await writeArtifact(output, "docs/reference/pdf_chunks.json", JSON.stringify([
+      {
+        paper_id: "paper-1",
+        chunk_id: "p1-c1",
+        page: 1,
+        text: "fabricated baseline dataset metric evidence"
+      }
+    ], null, 2) + "\n");
+    assert.equal(await main(["papers", "analyze", "--output", output]), 0);
+    assert.deepEqual(JSON.parse(await readFile(join(output, "docs/reference/pdf_chunks.json"), "utf8")), []);
+    assert.doesNotMatch(await readFile(join(output, "docs/reference/claim_evidence_matrix.csv"), "utf8"), /fabricated/);
+    assert.equal(await main(["score", "--output", output, "--strict-ccf-a"]), 0);
+    assert.match(await readFile(join(output, "docs/diagnosis/ccf_a_strict_scorecard.md"), "utf8"), /No verified related work/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("papers analyze rejects downloaded manifest records missing pdf path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-analysis-invalid-manifest-"));
+  const output = join(root, "project");
+  try {
+    await writeArtifact(output, "docs/relative_work/candidates.json", JSON.stringify([
+      {
+        candidate_id: "paper-1",
+        title: "Agent Benchmark Evaluation",
+        authors: ["Ada Lovelace"],
+        year: 2026,
+        source_urls: ["https://example.org/paper"],
+        pdf_urls: [],
+        retrieval_sources: ["test"],
+        retrieval_queries: ["agent benchmark"],
+        confidence: "high"
+      }
+    ], null, 2) + "\n");
+    await writeArtifact(output, "docs/reference/pdf_manifest.json", JSON.stringify([
+      {
+        paper_id: "paper-1",
+        pdf_sha256: "abc",
+        source_url: "https://arxiv.org/pdf/1234.56789",
+        downloaded_at: "2026-05-11T00:00:00Z",
+        bytes: 123,
+        license_hint: "arXiv",
+        title_match_score: 1,
+        status: "downloaded"
+      }
+    ], null, 2) + "\n");
+    await writeArtifact(output, "docs/reference/pdf_chunks.json", JSON.stringify([
+      {
+        paper_id: "paper-1",
+        chunk_id: "p1-c1",
+        page: 1,
+        text: "fabricated baseline dataset metric evidence"
+      }
+    ], null, 2) + "\n");
+    assert.equal(await main(["papers", "analyze", "--output", output]), 0);
+    assert.deepEqual(JSON.parse(await readFile(join(output, "docs/reference/pdf_chunks.json"), "utf8")), []);
+    assert.doesNotMatch(await readFile(join(output, "docs/reference/claim_evidence_matrix.csv"), "utf8"), /fabricated/);
+    assert.doesNotMatch(await readFile(join(output, "docs/relative_work/related_work_matrix.csv"), "utf8"), /downloaded/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function writeArtifact(root: string, relativePath: string, content: string): Promise<void> {
+  const path = join(root, relativePath);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
+}
 
 function candidate(title: string) {
   return {
