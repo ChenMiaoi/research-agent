@@ -12,6 +12,7 @@ export type TuiRuntimeDecision = {
 export type TuiRuntimeApproval = {
   id: string;
   action: string;
+  stage_id?: string;
   risk?: string;
   decision?: "approved" | "denied";
   timestamp: string;
@@ -25,7 +26,7 @@ export type TuiRuntimeSnapshot = {
   artifacts: RuntimeArtifactEntry[];
   decisions: TuiRuntimeDecision[];
   approvals: TuiRuntimeApproval[];
-  status: "running" | "completed" | "failed" | "cancelled";
+  status: "running" | "blocked" | "completed" | "failed" | "cancelled";
   message?: string;
 };
 
@@ -54,7 +55,7 @@ export function applyTuiRuntimeEvent(snapshot: TuiRuntimeSnapshot, event: Idea2R
     artifacts: artifactsForRuntimeEvent(snapshot.artifacts, event),
     decisions: decisionsForRuntimeEvent(snapshot.decisions, event),
     approvals: approvalsForRuntimeEvent(snapshot.approvals, event),
-    ...statusForRuntimeEvent(event)
+    ...statusForRuntimeEvent(snapshot.status, event)
   };
 }
 
@@ -109,6 +110,7 @@ function approvalsForRuntimeEvent(approvals: TuiRuntimeApproval[], event: Idea2R
     const next: TuiRuntimeApproval = {
       id: event.approval_id,
       action: event.action,
+      stage_id: event.stage_id,
       risk: event.risk,
       timestamp: event.timestamp
     };
@@ -119,6 +121,7 @@ function approvalsForRuntimeEvent(approvals: TuiRuntimeApproval[], event: Idea2R
   const next: TuiRuntimeApproval = {
     id: event.approval_id,
     action: existing?.action ?? event.approval_id,
+    stage_id: existing?.stage_id,
     risk: existing?.risk,
     decision: event.decision,
     timestamp: event.timestamp
@@ -126,10 +129,12 @@ function approvalsForRuntimeEvent(approvals: TuiRuntimeApproval[], event: Idea2R
   return [...approvals.filter((approval) => approval.id !== next.id), next];
 }
 
-function statusForRuntimeEvent(event: Idea2RepoEvent): Partial<Pick<TuiRuntimeSnapshot, "status" | "message">> {
+function statusForRuntimeEvent(current: TuiRuntimeSnapshot["status"], event: Idea2RepoEvent): Partial<Pick<TuiRuntimeSnapshot, "status" | "message">> {
   if (event.type === "run.completed") return { status: "completed", message: undefined };
   if (event.type === "run.failed") return { status: "failed", message: event.error };
   if (event.type === "run.cancelled") return { status: "cancelled", message: event.reason };
+  if (event.type === "stage.blocked") return { status: "blocked", message: event.reason };
+  if (event.type === "stage.started" && current === "blocked") return { status: "running", message: undefined };
   return {};
 }
 

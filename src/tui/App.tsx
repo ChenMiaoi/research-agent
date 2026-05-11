@@ -29,10 +29,9 @@ import {
 } from "./presentation.js";
 import { completeSlashInput, getSlashHint, getSlashSuggestions, resolveSlashCommandInput, selectedSlashSuggestion, slashCommands } from "./slash-commands.js";
 import { addHistoryEntry, readTuiInputHistory, writeTuiInputHistory } from "./history.js";
-import { ArtifactPanel, type RuntimeArtifactEntry } from "./ArtifactPanel.js";
+import type { RuntimeArtifactEntry } from "./ArtifactPanel.js";
 import { ApprovalDialog, type ApprovalDialogDecision } from "./ApprovalDialog.js";
-import { PlanPanel } from "./PlanPanel.js";
-import { TracePanel } from "./TracePanel.js";
+import { nextInspectorTab, ResearchCockpit, type InspectorTab } from "./ResearchCockpit.js";
 import { applyTuiRuntimeEvent, createTuiRuntimeSnapshot, liveApprovalDetails, liveDecisionDetails, type TuiRuntimeSnapshot } from "./runtime-view.js";
 
 type Message = {
@@ -191,6 +190,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   const [activeDirectoryPicker, setActiveDirectoryPicker] = useState<ActiveDirectoryPicker | null>(null);
   const [activeApprovalDialog, setActiveApprovalDialog] = useState<ActiveApprovalDialog | null>(null);
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<TuiRuntimeSnapshot | null>(null);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("evidence");
   const activeAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -379,6 +379,10 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
         void Promise.resolve(select.onSelect(option)).catch((error: unknown) => appendError(error));
         return;
       }
+      return;
+    }
+    if (!activePrompt && !input && currentRuntimeSnapshot(output) && (_input === "[" || _input === "]")) {
+      setInspectorTab((current) => nextInspectorTab(current, _input === "[" ? -1 : 1));
       return;
     }
     if (!activePrompt && input.startsWith("/") && slashSuggestions.length && (key.upArrow || key.downArrow)) {
@@ -686,6 +690,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     const outputRoot = resolve(outputOverride);
     const policy = approvalPolicyForMode(runtimeMode);
     setRuntimeSnapshot(createTuiRuntimeSnapshot(runId, outputRoot));
+    setInspectorTab("evidence");
     let terminalRuntimeEvent = false;
     const runtimeEvents: EventSink = {
       emit: (event) => {
@@ -1400,6 +1405,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
           reasoning={reasoning}
           busy={busy}
           runtimeSnapshot={currentRuntimeSnapshot(output)}
+          inspectorTab={inspectorTab}
         />
       ) : null}
       <ComposerPanel
@@ -1738,7 +1744,8 @@ function MainPanels({
   model,
   reasoning,
   busy,
-  runtimeSnapshot
+  runtimeSnapshot,
+  inspectorTab
 }: {
   height: number;
   layout: TuiLayout;
@@ -1751,6 +1758,7 @@ function MainPanels({
   reasoning: ReasoningEffort;
   busy: boolean;
   runtimeSnapshot: TuiRuntimeSnapshot | null;
+  inspectorTab: InspectorTab;
 }): React.ReactElement {
   if (height < 3) {
     return (
@@ -1758,6 +1766,10 @@ function MainPanels({
         <Text color={theme.dim}>{compactText(`Next ${nextAction.command}: ${nextAction.reason}`, layout.columns)}</Text>
       </Box>
     );
+  }
+
+  if (runtimeSnapshot) {
+    return <ResearchCockpit height={height} width={layout.columns} compact={!layout.sideBySide} snapshot={runtimeSnapshot} activeInspectorTab={inspectorTab} />;
   }
 
   if (layout.sideBySide) {
@@ -1768,11 +1780,7 @@ function MainPanels({
           <ThinkingPanel height={height} width={columnWidth} workflowSteps={workflowSteps} activities={activities} nextAction={nextAction} provider={provider} model={model} reasoning={reasoning} busy={busy} />
         </Box>
         <Box flexGrow={1}>
-          {runtimeSnapshot ? (
-            <RuntimeLivePanel height={height} width={columnWidth} layout={layout} snapshot={runtimeSnapshot} />
-          ) : (
-            <ExecutionPanel height={height} width={columnWidth} layout={layout} workflowSteps={workflowSteps} activities={activities} notice={notice} busy={busy} />
-          )}
+          <ExecutionPanel height={height} width={columnWidth} layout={layout} workflowSteps={workflowSteps} activities={activities} notice={notice} busy={busy} />
         </Box>
       </Box>
     );
@@ -1785,11 +1793,7 @@ function MainPanels({
     <Box height={height} flexShrink={0} flexDirection="column">
       <ThinkingPanel height={thinkingRows} width={width} workflowSteps={workflowSteps} activities={activities} nextAction={nextAction} provider={provider} model={model} reasoning={reasoning} busy={busy} />
       {executionRows ? (
-        runtimeSnapshot ? (
-          <RuntimeLivePanel height={executionRows} width={width} layout={layout} snapshot={runtimeSnapshot} />
-        ) : (
-          <ExecutionPanel height={executionRows} width={width} layout={layout} workflowSteps={workflowSteps} activities={activities} notice={notice} busy={busy} />
-        )
+        <ExecutionPanel height={executionRows} width={width} layout={layout} workflowSteps={workflowSteps} activities={activities} notice={notice} busy={busy} />
       ) : null}
     </Box>
   );
@@ -1855,46 +1859,6 @@ function ThinkingPanel({
   return (
     <Box height={height} flexShrink={0} borderStyle="round" borderColor={theme.command} paddingX={1} flexDirection="column">
       {lines}
-    </Box>
-  );
-}
-
-function RuntimeLivePanel({
-  height,
-  width,
-  layout,
-  snapshot
-}: {
-  height: number;
-  width: number;
-  layout: TuiLayout;
-  snapshot: TuiRuntimeSnapshot;
-}): React.ReactElement {
-  if (height < 3) {
-    return (
-      <Box height={height} flexShrink={0}>
-        <Text color={statusColor(snapshot.status)}>{compactText(`Runtime ${snapshot.status}: ${snapshot.runId}`, width)}</Text>
-      </Box>
-    );
-  }
-  const innerRows = Math.max(0, height - 2);
-  const showArtifacts = innerRows >= 8;
-  const sectionCount = showArtifacts ? 3 : 2;
-  const sectionLimit = Math.max(1, Math.min(layout.tiny ? 1 : 4, Math.floor(Math.max(1, innerRows - 3 - sectionCount) / sectionCount)));
-  return (
-    <Box height={height} flexShrink={0} borderStyle="round" borderColor={theme.panel} paddingX={1} flexDirection="column">
-      <SectionTitle label="Runtime" />
-      <Text>
-        <Text color={statusColor(snapshot.status)}>{snapshot.status}</Text>
-        <Text color={theme.dim}>  run {snapshot.runId.slice(0, 8)}</Text>
-        <Text color={theme.dim}>  events {snapshot.events.length}</Text>
-        {snapshot.decisions.length ? <Text color={theme.dim}>  decisions {snapshot.decisions.length}</Text> : null}
-        {snapshot.approvals.length ? <Text color={theme.dim}>  approvals {snapshot.approvals.length}</Text> : null}
-      </Text>
-      {snapshot.message ? <Text color={snapshot.status === "failed" ? theme.danger : theme.warning}>{compactText(snapshot.message, width)}</Text> : null}
-      <PlanPanel plan={snapshot.plan} limit={sectionLimit} />
-      <TracePanel events={snapshot.events} limit={sectionLimit} />
-      {showArtifacts ? <ArtifactPanel artifacts={snapshot.artifacts} limit={sectionLimit} /> : null}
     </Box>
   );
 }
@@ -2666,13 +2630,6 @@ function workflowColor(status: TuiWorkflowStep["status"]): string {
   if (status === "done") return theme.success;
   if (status === "active") return theme.accent;
   return theme.dim;
-}
-
-function statusColor(status: TuiRuntimeSnapshot["status"]): string {
-  if (status === "completed") return theme.success;
-  if (status === "failed") return theme.danger;
-  if (status === "cancelled") return theme.warning;
-  return theme.accent;
 }
 
 function activityMark(activity: TuiActivity): string {

@@ -4,6 +4,7 @@ import React from "react";
 import { ApprovalDialog } from "../src/tui/ApprovalDialog.js";
 import { ArtifactPanel } from "../src/tui/ArtifactPanel.js";
 import { PlanPanel } from "../src/tui/PlanPanel.js";
+import { nextInspectorTab, ResearchCockpit } from "../src/tui/ResearchCockpit.js";
 import { TracePanel } from "../src/tui/TracePanel.js";
 import type { Idea2RepoEvent } from "../src/runtime/events.js";
 import type { PlanState } from "../src/runtime/plan.js";
@@ -103,3 +104,103 @@ test("TUI runtime snapshot follows live runtime events", () => {
   assert.match(liveApprovalDetails(snapshot).join("\n"), /tool:github.publish/);
   assert.equal(snapshot.status, "completed");
 });
+
+test("research cockpit hides raw trace outside Debug inspector tab", () => {
+  let snapshot = createTuiRuntimeSnapshot("run-1", "generated_repos/demo", "2026-01-01T00:00:00Z");
+  const events: Idea2RepoEvent[] = [
+    {
+      type: "run.started",
+      run_id: "run-1",
+      idea: "test idea",
+      output_root: "generated_repos/demo",
+      timestamp: "2026-01-01T00:00:01Z"
+    },
+    {
+      type: "paper.found",
+      run_id: "run-1",
+      paper_id: "paper-1",
+      title: "Evidence First Agents",
+      venue: "NeurIPS",
+      year: 2026,
+      pdf_status: "available",
+      timestamp: "2026-01-01T00:00:02Z"
+    },
+    {
+      type: "evidence.extracted",
+      run_id: "run-1",
+      evidence_id: "e1",
+      paper_id: "paper-1",
+      claim: "Uses page-level evidence",
+      claim_type: "method",
+      page: 4,
+      quote: "quoted evidence",
+      chunk_id: "paper-1-p4-c1",
+      confidence: 0.8,
+      timestamp: "2026-01-01T00:00:03Z"
+    },
+    {
+      type: "score.updated",
+      run_id: "run-1",
+      score: 62,
+      max_score: 100,
+      confidence: 0.7,
+      hard_blockers: ["No reproduction yet"],
+      timestamp: "2026-01-01T00:00:04Z"
+    }
+  ];
+  for (const event of events) snapshot = applyTuiRuntimeEvent(snapshot, event);
+
+  const defaultText = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "evidence" }));
+  assert.match(defaultText, /PLAN/);
+  assert.match(defaultText, /RESEARCH THREAD/);
+  assert.match(defaultText, /INSPECTOR/);
+  assert.match(defaultText, /Evidence/);
+  assert.match(defaultText, /Papers/);
+  assert.match(defaultText, /Score/);
+  assert.match(defaultText, /Artifacts/);
+  assert.match(defaultText, /Approvals/);
+  assert.match(defaultText, /Debug/);
+  assert.match(defaultText, /Uses page-level evidence/);
+  assert.doesNotMatch(defaultText, /run\.started/);
+  assert.doesNotMatch(defaultText, /Trace/);
+
+  const debugText = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "debug" }));
+  assert.match(debugText, /Debug/);
+  assert.match(debugText, /run\.started/);
+  assert.equal(nextInspectorTab("evidence", 1), "papers");
+  assert.equal(nextInspectorTab("evidence", -1), "debug");
+});
+
+test("TUI runtime snapshot surfaces blocked stage state", () => {
+  let snapshot = createTuiRuntimeSnapshot("run-1", "generated_repos/demo", "2026-01-01T00:00:00Z");
+  snapshot = applyTuiRuntimeEvent(snapshot, {
+    type: "stage.blocked",
+    run_id: "run-1",
+    stage_id: "pdf_acquisition",
+    reason: "Pending PDF approval",
+    timestamp: "2026-01-01T00:00:01Z"
+  });
+  assert.equal(snapshot.status, "blocked");
+  assert.equal(snapshot.message, "Pending PDF approval");
+  snapshot = applyTuiRuntimeEvent(snapshot, {
+    type: "stage.started",
+    run_id: "run-1",
+    stage_id: "pdf_acquisition",
+    label: "PDF acquisition",
+    timestamp: "2026-01-01T00:00:02Z"
+  });
+  assert.equal(snapshot.status, "running");
+  assert.equal(snapshot.message, undefined);
+});
+
+function textContent(value: unknown): string {
+  if (value === null || value === undefined || typeof value === "boolean") return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(textContent).join("");
+  if (React.isValidElement(value)) {
+    const element = value as React.ReactElement<{ children?: React.ReactNode }>;
+    if (typeof element.type === "function") return textContent((element.type as (props: { children?: React.ReactNode }) => React.ReactNode)(element.props));
+    return textContent(element.props.children);
+  }
+  return "";
+}
