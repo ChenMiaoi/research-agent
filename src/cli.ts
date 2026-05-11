@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -20,8 +21,16 @@ import { normalizeSources } from "./skills/literature/search.js";
 import type { LiteratureSource } from "./skills/literature/types.js";
 import { acquirePdfs } from "./skills/pdf/acquire.js";
 import { buildPdfChunkIndex } from "./skills/pdf/chunk.js";
+import type { PdfChunkIndexEntry } from "./skills/pdf/chunk.js";
+import type { PdfManifestRecord } from "./skills/pdf/provenance.js";
+import type { PaperCandidate } from "./skills/literature/types.js";
+import { evidenceRowsMarkdown, evidenceText, extractEvidenceRows, evidenceRowsCsv } from "./skills/analysis/evidence-extract.js";
+import { relatedWorkMatrixCsv, topicClustersMarkdown } from "./skills/analysis/related-work-matrix.js";
+import { assessNovelty, noveltyMatrixMarkdown } from "./skills/analysis/novelty-matrix.js";
+import { strictCcfAScore, strictScoreMarkdown } from "./skills/analysis/ccf-a-score.js";
+import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from "./skills/analysis/idea-refine.js";
 
-const commandNames = new Set(["research", "generate", "literature", "status", "resume", "validate", "doctor", "auth", "login", "logout", "provider", "venues", "github", "api", "web"]);
+const commandNames = new Set(["research", "generate", "literature", "papers", "score", "refine", "status", "resume", "validate", "doctor", "auth", "login", "logout", "provider", "venues", "github", "api", "web"]);
 
 type ParsedArgs = {
   _: string[];
@@ -50,6 +59,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await commandGenerate(rest);
       case "literature":
         return await commandLiterature(rest);
+      case "papers":
+        return await commandPapers(rest);
+      case "score":
+        return await commandScore(rest);
+      case "refine":
+        return await commandRefine(rest);
       case "status":
         return await commandStatus(rest);
       case "resume":
@@ -86,6 +101,93 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.error("error: unknown failure");
     return 2;
   }
+}
+
+async function commandPapers(argv: string[]): Promise<number> {
+  const action = argv[0] ?? "analyze";
+  const parsed = parseArgs(argv.slice(1));
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  if (action !== "analyze") throw new Error(`unknown papers action: ${action}`);
+  const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
+  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
+  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const evidenceRows = extractEvidenceRows(chunks);
+  await writeText(ensureChild(root, "docs/reference/claim_evidence_matrix.csv"), evidenceRowsCsv(evidenceRows));
+  for (const [relativePath, content] of Object.entries(evidenceRowsMarkdown(evidenceRows))) await writeText(ensureChild(root, relativePath), content);
+  await writeText(ensureChild(root, "docs/relative_work/related_work_matrix.csv"), relatedWorkMatrixCsv(candidates, manifest, evidenceRows));
+  await writeText(ensureChild(root, "docs/relative_work/topic_clusters.md"), topicClustersMarkdown(candidates));
+  const novelty = assessNovelty(await ideaFromArgsOrManifest(parsed, root), candidates, evidenceRows);
+  await writeText(ensureChild(root, "docs/relative_work/novelty_gap_matrix.md"), noveltyMatrixMarkdown(novelty));
+  await writeText(ensureChild(root, "docs/relative_work/collision_risk.md"), `# Collision Risk\n\n${novelty.collision_risk}\n\n${novelty.reasons.map((reason) => `- ${reason}`).join("\n")}\n`);
+  console.log(`Paper analysis written under ${ensureChild(root, "docs/relative_work")}`);
+  console.log(`Evidence rows: ${evidenceRows.length}`);
+  return 0;
+}
+
+async function commandScore(argv: string[]): Promise<number> {
+  const parsed = parseArgs(argv);
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  const idea = await ideaFromArgsOrManifest(parsed, root);
+  const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
+  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
+  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const evidenceRows = extractEvidenceRows(chunks);
+  const text = evidenceText(evidenceRows);
+  const novelty = assessNovelty(idea, candidates, evidenceRows);
+  const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
+  const score = strictCcfAScore({
+    verifiedRelatedWorkCount: verifiedPaperCount,
+    pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
+    corePaperCount: verifiedPaperCount,
+    hasStrongBaseline: text.includes("baseline"),
+    hasDatasetOrBenchmark: text.includes("dataset") || text.includes("benchmark"),
+    hasMetric: text.includes("metric") || text.includes("accuracy") || text.includes("latency"),
+    highPriorWorkCollision: novelty.collision_risk === "high",
+    pureEngineeringIntegration: /tool|platform|dashboard|repo/.test(text),
+    hasScientificHypothesis: text.includes("hypothesis") || text.includes("claim"),
+    hasExecutableExperimentPlan: text.includes("experiment") && text.includes("baseline") && text.includes("metric"),
+    singlePersonTwelveWeekInfeasible: valuesFlag(parsed, "resource").some((resource) => /single|solo|one/i.test(resource)) && numberFlag(parsed, "weeks", 12) <= 12,
+    venueRequiresThreatModel: /ccs|security|s&p|ndss/i.test(stringFlag(parsed, "venue") ?? ""),
+    hasThreatModel: text.includes("threat model"),
+    venueRequiresSystemEvaluation: /osdi|sosp|sigcomm|atc|systems/i.test(stringFlag(parsed, "venue") ?? ""),
+    hasPrototype: text.includes("prototype"),
+    venueExpectsStrongMlBaselines: /neurips|icml|iclr|acl/i.test(stringFlag(parsed, "venue") ?? ""),
+    hasStrongMlBaselines: text.includes("baseline")
+  });
+  void manifest;
+  await writeText(ensureChild(root, "docs/diagnosis/ccf_a_strict_scorecard.md"), strictScoreMarkdown(score));
+  console.log(`Strict CCF-A score: ${score.total} / 100`);
+  console.log(`Scorecard written: ${ensureChild(root, "docs/diagnosis/ccf_a_strict_scorecard.md")}`);
+  return 0;
+}
+
+async function commandRefine(argv: string[]): Promise<number> {
+  const parsed = parseArgs(argv);
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  const idea = await ideaFromArgsOrManifest(parsed, root);
+  const candidates = await readJsonFile<PaperCandidate[]>(root, "docs/relative_work/candidates.json", []);
+  const manifest = await readJsonFile<PdfManifestRecord[]>(root, "docs/reference/pdf_manifest.json", []);
+  const chunks = await readJsonFile<PdfChunkIndexEntry[]>(root, "docs/reference/pdf_chunks.json", []);
+  const evidenceRows = extractEvidenceRows(chunks);
+  const novelty = assessNovelty(idea, candidates, evidenceRows);
+  const verifiedPaperCount = verifiedEvidencePaperCount(evidenceRows);
+  const text = evidenceText(evidenceRows);
+  const score = strictCcfAScore({
+    verifiedRelatedWorkCount: verifiedPaperCount,
+    pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
+    corePaperCount: verifiedPaperCount,
+    hasStrongBaseline: text.includes("baseline"),
+    hasDatasetOrBenchmark: text.includes("dataset") || text.includes("benchmark"),
+    hasMetric: text.includes("metric") || text.includes("accuracy") || text.includes("latency"),
+    highPriorWorkCollision: novelty.collision_risk === "high",
+    hasExecutableExperimentPlan: false
+  });
+  void manifest;
+  await writeText(ensureChild(root, "docs/proposal/revised_idea.md"), revisedIdeaMarkdown(idea, novelty, score));
+  await writeText(ensureChild(root, "docs/proposal/experiment_plan.md"), experimentPlanMarkdown());
+  await writeText(ensureChild(root, "docs/diagnosis/feasibility_report.md"), feasibilityMarkdown(valuesFlag(parsed, "resource"), numberFlag(parsed, "weeks", 12)));
+  console.log(`Revised idea written: ${ensureChild(root, "docs/proposal/revised_idea.md")}`);
+  return 0;
 }
 
 async function commandGenerate(argv: string[]): Promise<number> {
@@ -159,7 +261,7 @@ async function commandLiterature(argv: string[]): Promise<number> {
   if (action === "download") {
     const candidatesPath = ensureChild(root, "docs/relative_work/candidates.json");
     if (!(await exists(candidatesPath))) throw new Error(`missing literature candidates: ${candidatesPath}`);
-    const candidates = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(candidatesPath, "utf8"))) as never[];
+    const candidates = JSON.parse(await readFile(candidatesPath, "utf8")) as never[];
     const manifest = await acquirePdfs(candidates, {
       outputRoot: root,
       downloadPdfs: hasFlag(parsed, "download-pdfs")
@@ -413,7 +515,7 @@ async function queriesFromArgsOrPlan(parsed: ParsedArgs, root: string): Promise<
   if (direct.length) return direct;
   const planPath = ensureChild(root, "docs/relative_work/search_plan.json");
   if (await exists(planPath)) {
-    const plan = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(planPath, "utf8"))) as {
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as {
       precision_queries?: Array<{ query?: string }>;
       recall_queries?: Array<{ query?: string }>;
     };
@@ -421,6 +523,16 @@ async function queriesFromArgsOrPlan(parsed: ParsedArgs, root: string): Promise<
     if (queries.length) return queries;
   }
   return ["research agent benchmark baseline dataset metric"];
+}
+
+async function readJsonFile<T>(root: string, relativePath: string, fallback: T): Promise<T> {
+  const path = ensureChild(root, relativePath);
+  if (!(await exists(path))) return fallback;
+  return JSON.parse(await readFile(path, "utf8")) as T;
+}
+
+function verifiedEvidencePaperCount(rows: ReturnType<typeof extractEvidenceRows>): number {
+  return new Set(rows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id).map((row) => row.paper_id)).size;
 }
 
 function policyFromFlags(parsed: ParsedArgs): PermissionPolicy {
@@ -442,6 +554,9 @@ Usage:
   idea2repo research "research idea" [options]
   idea2repo generate "research idea" [options]  # legacy alias
   idea2repo literature plan|search|download [--output dir] [--allow-network]
+  idea2repo papers analyze [--output dir]
+  idea2repo score [--output dir] [--strict-ccf-a]
+  idea2repo refine [--output dir]
   idea2repo status|resume|validate [--output dir]
   idea2repo auth status|login|logout
   idea2repo provider list|show|validate

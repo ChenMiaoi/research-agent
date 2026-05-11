@@ -21,6 +21,11 @@ export * from "./skills/pdf/chunk.js";
 export * from "./skills/pdf/parse.js";
 export * from "./skills/pdf/provenance.js";
 export * from "./skills/pdf/validate.js";
+export * from "./skills/analysis/evidence-extract.js";
+export * from "./skills/analysis/related-work-matrix.js";
+export * from "./skills/analysis/novelty-matrix.js";
+export * from "./skills/analysis/ccf-a-score.js";
+export * from "./skills/analysis/idea-refine.js";
 export {
   AuthStorage,
   CodexOAuthClient,

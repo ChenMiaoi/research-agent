@@ -29,6 +29,21 @@ export type PaperRecord = {
   difference_from_current_idea?: string;
   collision_risk?: string;
   useful_for?: string;
+  pdf_path?: string;
+  pdf_sha256?: string;
+  pdf_status?: "downloaded" | "not_available" | "failed" | "skipped_license";
+  evidence_refs?: Array<{
+    page: number;
+    quote: string;
+    chunk_id: string;
+    purpose: string;
+  }>;
+  analysis_confidence?: "high" | "medium" | "low";
+};
+
+export type VerifiedPaperRecord = PaperRecord & {
+  evidence_refs: NonNullable<PaperRecord["evidence_refs"]>;
+  analysis_confidence: "high" | "medium" | "low";
 };
 
 export type { PaperCandidate as LiteraturePaperCandidate, LiteratureSearchOptions, LiteratureSearchResult };
