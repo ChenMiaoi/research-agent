@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AuthStorage, CodexOAuthClient, authPath, parseUsageSnapshot } from "../src/auth/codex-oauth.js";
@@ -22,7 +22,7 @@ test("AuthStorage stores Codex OAuth credentials outside generated repos with re
     assert.equal(credentials?.accountId, "account-id");
     assert.equal(credentials?.access, "access-token");
     const fileMode = (await stat(authPath())).mode & 0o777;
-    assert.equal(fileMode, 0o600);
+    if (platform() !== "win32") assert.equal(fileMode, 0o600);
     await storage.logout();
     assert.equal(await storage.get(), null);
   } finally {

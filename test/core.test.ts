@@ -57,7 +57,7 @@ test("resume restores missing generated artifacts without overwriting existing f
     let current = await status(root);
     assert.ok(current.missing_artifacts.includes("docs/diagnosis/risk_register.md"));
     const resumed = await resumeResearchRepo(root);
-    assert.ok(resumed.files.some((file) => file.endsWith("docs/diagnosis/risk_register.md")));
+    assert.ok(resumed.files.some((file) => file.split("\\").join("/").endsWith("docs/diagnosis/risk_register.md")));
     current = await status(root);
     assert.equal(current.missing_artifacts.length, 0);
   } finally {

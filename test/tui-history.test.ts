@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { addHistoryEntry, isHistorySafe, readTuiInputHistory, writeTuiInputHistory } from "../src/tui/history.js";
@@ -22,7 +22,7 @@ test("TUI input history persists with restricted file permissions", async () => 
     await writeTuiInputHistory(["/generate", "Bearer secret-token", "novel systems benchmark"], path);
     assert.deepEqual(await readTuiInputHistory(path), ["/generate", "novel systems benchmark"]);
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")), ["/generate", "novel systems benchmark"]);
-    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    if (platform() !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
