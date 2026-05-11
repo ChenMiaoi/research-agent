@@ -55,6 +55,15 @@ test("runtime API starts runs and streams shared runtime events over SSE", async
     assert.ok(firstArtifactIndex >= 0);
     assert.ok(finalRunCompletedIndex > firstArtifactIndex);
     assert.equal(trace.at(-1)?.type, "run.completed");
+
+    const skipped = await postJson(`${server.url}/runs/${started.run_id}/stages/pdf_reading/skip`, { reason: "Manual API skip for offline recovery test." });
+    assert.equal(skipped.action, "skip");
+    assert.equal(skipped.stage_id, "pdf_reading");
+    const retried = await postJson(`${server.url}/runs/${started.run_id}/stages/search_planning/retry`, { execute: false, reason: "Manual API retry preparation." });
+    assert.equal(retried.action, "retry");
+    assert.equal(retried.stage_id, "search_planning");
+    const cancelled = await postJson(`${server.url}/runs/${started.run_id}/cancel`, { reason: "No-op cancel after completion." });
+    assert.equal(cancelled.status, "completed");
   } finally {
     await server.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

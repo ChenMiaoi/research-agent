@@ -74,6 +74,7 @@ export type GenerateOptions = {
   jsonlEvents?: boolean;
   runId?: string;
   eventSink?: EventSink;
+  signal?: AbortSignal;
 };
 
 export type GeneratedProject = {
@@ -103,12 +104,22 @@ type ProviderAnalysis = {
 
 export async function generateResearchRepo(idea: string, output: string, options: GenerateOptions = {}): Promise<GeneratedProject> {
   if (!idea.trim()) throw new Error("idea must not be empty");
+  const root = resolve(output);
+  const runId = options.runId ?? randomUUID();
+  const traceEvents = options.jsonlEvents ? new JsonlEventSink(join(root, ".idea2repo", "trace.jsonl")) : undefined;
+  const baseEvents = combineEventSinks(traceEvents, options.eventSink);
+  const rawRuntimeEvents = options.runResearchPipeline ? new PlanEventSink(root, runId, baseEvents) : baseEvents;
+  const terminalEvents = rawRuntimeEvents ? new TerminalEventTrackingSink(rawRuntimeEvents) : undefined;
+  const runtimeEvents: EventSink | undefined = terminalEvents;
+  if (options.signal?.aborted) {
+    await runtimeEvents?.emit({ type: "run.cancelled", run_id: runId, reason: abortReason(options.signal), timestamp: runtimeTimestamp() });
+    throwIfAborted(options.signal);
+  }
   const timelineWeeks = options.timelineWeeks ?? 12;
   if (![8, 12, 16, 24].includes(timelineWeeks)) throw new Error("timeline_weeks must be one of: 8, 12, 16, 24");
   const stack = options.stack ?? "python";
   if (stack !== "python" && stack !== "ts") throw new Error("stack must be one of: python, ts");
 
-  const root = resolve(output);
   const policy = options.permissionPolicy ?? defaultPolicy({ allowOverwrite: options.force });
   if ((await exists(root)) && (await nonEmpty(root)) && !options.force) {
     throw new Error(`output directory already exists and is not empty: ${root}`);
@@ -118,10 +129,6 @@ export async function generateResearchRepo(idea: string, output: string, options
   if ((options.allowNetwork || options.downloadPdfs) && !policy.allowNetwork) requirePermission(policy, "network", "research pipeline network access");
 
   const createdAt = options.createdAt ?? today();
-  const runId = options.runId ?? randomUUID();
-  const traceEvents = options.jsonlEvents ? new JsonlEventSink(join(root, ".idea2repo", "trace.jsonl")) : undefined;
-  const baseEvents = combineEventSinks(traceEvents, options.eventSink);
-  const runtimeEvents = options.runResearchPipeline ? new PlanEventSink(root, runId, baseEvents) : baseEvents;
   const toolRegistry = createCoreToolRegistry();
   const toolContext = createToolContext({
     runId,
@@ -138,6 +145,7 @@ export async function generateResearchRepo(idea: string, output: string, options
       "generate"
     )
   });
+  try {
   const pipeline = options.runResearchPipeline
     ? await runResearchPipeline(idea, {
         allowNetwork: Boolean(options.allowNetwork && policy.allowNetwork),
@@ -156,9 +164,11 @@ export async function generateResearchRepo(idea: string, output: string, options
         strictCcfA: options.strictCcfA,
         events: runtimeEvents ? new PipelineCompletionSuppressingSink(runtimeEvents) : undefined,
         runId,
+        signal: options.signal,
         progress: options.progressCallback
       })
     : null;
+  throwIfAborted(options.signal);
   const providerAnalysis = options.runResearchPipeline
     ? providerAnalysisFromPipeline(options, pipeline)
     : await analyzeWithProvider(idea, {
@@ -236,6 +246,7 @@ export async function generateResearchRepo(idea: string, output: string, options
   const written: string[] = [];
   options.progressCallback?.("Artifacts: writing repository scaffold");
   for (const [relativePath, content] of Object.entries(fileMap)) {
+    throwIfAborted(options.signal);
     const path = await writeGeneratedArtifact(toolRegistry, toolContext, relativePath, content);
     written.push(path);
   }
@@ -272,6 +283,7 @@ export async function generateResearchRepo(idea: string, output: string, options
     }
   }
   for (const directory of emptyDirectories()) {
+    throwIfAborted(options.signal);
     const keepFile = ensureChild(root, join(directory, ".gitkeep"));
     await toolRegistry.execute("artifact.write", { path: join(directory, ".gitkeep"), content: "" }, toolContext);
     written.push(keepFile);
@@ -323,6 +335,26 @@ export async function generateResearchRepo(idea: string, output: string, options
     research_pipeline: pipeline,
     template_profile_id: templateArtifacts?.profile.profile_id ?? null
   };
+  } catch (error) {
+    if (!terminalEvents?.terminalEmitted) {
+      await runtimeEvents?.emit(options.signal?.aborted
+        ? { type: "run.cancelled", run_id: runId, reason: abortReason(options.signal, error), timestamp: runtimeTimestamp() }
+        : { type: "run.failed", run_id: runId, error: error instanceof Error ? error.message : String(error), timestamp: runtimeTimestamp() });
+    }
+    throw error;
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error(signal.reason ? String(signal.reason) : "run cancelled");
+}
+
+function abortReason(signal: AbortSignal | undefined, error?: unknown): string {
+  if (signal?.reason) return String(signal.reason);
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error) return error;
+  return "run cancelled";
 }
 
 async function writeGeneratedArtifact(registry: ToolRegistry, ctx: ToolContext, relativePath: string, content: string): Promise<string> {
@@ -346,6 +378,17 @@ class PipelineCompletionSuppressingSink implements EventSink {
 
   async emit(event: Idea2RepoEvent): Promise<void> {
     if (event.type === "run.completed") return;
+    await this.downstream.emit(event);
+  }
+}
+
+class TerminalEventTrackingSink implements EventSink {
+  terminalEmitted = false;
+
+  constructor(private readonly downstream: EventSink) {}
+
+  async emit(event: Idea2RepoEvent): Promise<void> {
+    if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled") this.terminalEmitted = true;
     await this.downstream.emit(event);
   }
 }

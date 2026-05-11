@@ -205,6 +205,35 @@ export async function readApprovalRecords(root: string): Promise<ApprovalRecord[
     .map((line) => JSON.parse(line) as ApprovalRecord);
 }
 
+export async function resolveApprovalRecord(
+  root: string,
+  approvalId: string,
+  decision: "approved" | "denied",
+  options: { reason?: string; events?: EventSink } = {}
+): Promise<ApprovalRecord> {
+  const records = await readApprovalRecords(root);
+  const current = [...records].reverse().find((record) => record.id === approvalId);
+  if (!current) throw new Error(`approval not found: ${approvalId}`);
+  const now = runtimeTimestamp();
+  const record: ApprovalRecord = {
+    ...current,
+    status: decision,
+    reason: options.reason ?? current.reason,
+    resolved_at: now
+  };
+  const path = join(root, APPROVALS_PATH);
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  await options.events?.emit({
+    type: "approval.resolved",
+    run_id: record.run_id,
+    approval_id: record.id,
+    decision,
+    timestamp: now
+  });
+  return record;
+}
+
 export function latestApprovalRecords(records: ApprovalRecord[]): ApprovalRecord[] {
   const byId = new Map<string, ApprovalRecord>();
   for (const record of records) byId.set(record.id, record);

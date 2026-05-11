@@ -11,11 +11,12 @@ import { submissionReady, blockingReasons } from "./evidence.js";
 import { runWorkflow } from "./workflow.js";
 import { openaiCodexOAuthProvider } from "./auth/codex-oauth.js";
 import { loadCodexModelCatalog } from "./models.js";
-import { readApprovalRecords } from "./runtime/approvals.js";
+import { readApprovalRecords, resolveApprovalRecord } from "./runtime/approvals.js";
 import { readDecisionRecords } from "./runtime/decisions.js";
 import { readPlanState } from "./runtime/plan.js";
-import { isFinalStatus, RunManager, type RuntimeRunRecord } from "./runtime/runs.js";
+import { isFinalStatus, retryRuntimeStage, RunManager, skipRuntimeStage, type RuntimeRunRecord } from "./runtime/runs.js";
 import type { Idea2RepoEvent } from "./runtime/events.js";
+import type { ResearchStageId } from "./pipeline/stages.js";
 
 export type ApiServer = {
   server: Server;
@@ -121,13 +122,14 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
   if (path === "/runs") {
     const idea = requiredString(body.idea, "idea");
     const output = resolve(requiredString(body.output, "output"));
-    const run = runManager.start({ idea, outputRoot: output }, async ({ runId, events }) => {
+    const run = runManager.start({ idea, outputRoot: output }, async ({ runId, events, signal }) => {
       const result = await generateResearchRepo(idea, output, {
         ...generateOptionsFromBody(body),
         runResearchPipeline: body.run_research_pipeline !== false,
         jsonlEvents: body.jsonl_events !== false,
         runId,
         eventSink: events,
+        signal,
         permissionPolicy: {
           allowWrite: true,
           allowOverwrite: Boolean(body.force),
@@ -154,6 +156,43 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
       artifacts_url: `/runs/${encodeURIComponent(run.id)}/artifacts`
     });
     return;
+  }
+  const runActionMatch = /^\/runs\/([^/]+)\/(.+)$/.exec(path);
+  if (runActionMatch) {
+    const run = requiredRun(runManager, decodeURIComponent(runActionMatch[1]!));
+    const suffix = runActionMatch[2] ?? "";
+    if (suffix === "cancel") {
+      const cancelled = await runManager.cancel(run.id, stringOrNull(body.reason) ?? "cancel requested from API");
+      sendJson(response, 202, { run_id: run.id, status: cancelled?.status ?? run.status });
+      return;
+    }
+    const stageAction = /^stages\/([^/]+)\/(retry|skip)$/.exec(suffix);
+    if (stageAction) {
+      const stageId = decodeURIComponent(stageAction[1]!) as ResearchStageId;
+      if (stageAction[2] === "retry") {
+        const result = await retryRuntimeStage(run.output_root, stageId, {
+          runId: run.id,
+          reason: stringOrNull(body.reason) ?? undefined,
+          execute: body.execute !== false,
+          allowNetwork: Boolean(body.allow_network),
+          downloadPdfs: Boolean(body.download_pdfs),
+          maxPapers: numberValue(body.max_papers, 20)
+        });
+        sendJson(response, 200, result as unknown as Record<string, unknown>);
+        return;
+      }
+      const result = await skipRuntimeStage(run.output_root, stageId, requiredString(body.reason, "reason"), { runId: run.id });
+      sendJson(response, 200, result as unknown as Record<string, unknown>);
+      return;
+    }
+    const approvalAction = /^approvals\/([^/]+)$/.exec(suffix);
+    if (approvalAction) {
+      const decision = body.decision === "approved" ? "approved" : body.decision === "denied" ? "denied" : null;
+      if (!decision) throw new HttpError(400, "decision must be approved or denied");
+      const record = await resolveApprovalRecord(run.output_root, decodeURIComponent(approvalAction[1]!), decision, { reason: stringOrNull(body.reason) ?? undefined });
+      sendJson(response, 200, record as unknown as Record<string, unknown>);
+      return;
+    }
   }
   if (path === "/generate") {
     const result = await generateResearchRepo(requiredString(body.idea, "idea"), requiredString(body.output, "output"), {

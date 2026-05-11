@@ -18,8 +18,11 @@ import { loadCodexModelCatalog } from "./models.js";
 import { proxyEnvForChild } from "./proxy.js";
 import { runResearchPipeline } from "./pipeline/research-pipeline.js";
 import { formatDecisions, readDecisionRecords } from "./runtime/decisions.js";
-import { readJsonlEvents } from "./runtime/events.js";
+import { JsonlEventSink, readJsonlEvents } from "./runtime/events.js";
 import { formatPlan, readPlanState } from "./runtime/plan.js";
+import { formatSnapshots, listArtifactSnapshots, restoreArtifactSnapshot } from "./runtime/artifacts.js";
+import { retryRuntimeStage, skipRuntimeStage } from "./runtime/runs.js";
+import type { ResearchStageId } from "./pipeline/stages.js";
 import { createProviderAdapter } from "./providers/index.js";
 import { normalizeSources } from "./skills/literature/search.js";
 import type { LiteratureSource } from "./skills/literature/types.js";
@@ -42,7 +45,7 @@ import { compilePaper } from "./skills/templates/compile.js";
 import { packagePaper } from "./skills/templates/package.js";
 import type { ReviewMode, TemplateResolveInput, VenueTemplateProfile } from "./skills/templates/types.js";
 
-const commandNames = new Set(["research", "generate", "plan", "trace", "literature", "papers", "score", "refine", "templates", "paper", "status", "resume", "validate", "doctor", "auth", "login", "logout", "provider", "venues", "github", "api", "web"]);
+const commandNames = new Set(["research", "generate", "plan", "trace", "stage", "snapshots", "restore", "literature", "papers", "score", "refine", "templates", "paper", "status", "resume", "validate", "doctor", "auth", "login", "logout", "provider", "venues", "github", "api", "web"]);
 
 type ParsedArgs = {
   _: string[];
@@ -74,6 +77,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await commandPlan(rest);
       case "trace":
         return await commandTrace(rest);
+      case "stage":
+        return await commandStage(rest);
+      case "snapshots":
+        return await commandSnapshots(rest);
+      case "restore":
+        return await commandRestore(rest);
       case "literature":
         return await commandLiterature(rest);
       case "papers":
@@ -141,6 +150,57 @@ async function commandTrace(argv: string[]): Promise<number> {
   const limit = numberFlag(parsed, "limit", 20);
   const events = await readJsonlEvents(ensureChild(root, ".idea2repo/trace.jsonl"));
   for (const event of events.slice(-limit)) console.log(JSON.stringify(event));
+  return 0;
+}
+
+async function commandStage(argv: string[]): Promise<number> {
+  const action = argv[0] ?? "";
+  const stageId = argv[1] as ResearchStageId | undefined;
+  const parsed = parseArgs(argv.slice(2));
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  if (!stageId) throw new Error("stage_id is required");
+  if (action === "skip") {
+    const reason = stringFlag(parsed, "reason") ?? parsed._.join(" ").trim();
+    const result = await skipRuntimeStage(root, stageId, reason);
+    console.log(`Stage skipped: ${result.stage_id}`);
+    console.log(`Run: ${result.run_id}`);
+    return 0;
+  }
+  if (action === "retry") {
+    const reason = stringFlag(parsed, "reason") ?? parsed._.join(" ").trim();
+    const result = await retryRuntimeStage(root, stageId, {
+      reason: reason || undefined,
+      execute: !hasFlag(parsed, "no-execute"),
+      allowNetwork: hasFlag(parsed, "allow-network"),
+      downloadPdfs: hasFlag(parsed, "download-pdfs"),
+      maxPapers: numberFlag(parsed, "max-papers", 20)
+    });
+    console.log(`Stage retry ${result.executed ? "executed" : "prepared"}: ${result.stage_id}`);
+    console.log(`Snapshots: ${result.snapshots.length}`);
+    console.log(`Run: ${result.run_id}`);
+    return 0;
+  }
+  throw new Error(`unknown stage action: ${action || "(missing)"}`);
+}
+
+async function commandSnapshots(argv: string[]): Promise<number> {
+  const action = argv[0] ?? "list";
+  const parsed = parseArgs(argv.slice(1));
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  if (action !== "list") throw new Error(`unknown snapshots action: ${action}`);
+  console.log(formatSnapshots(await listArtifactSnapshots(root)));
+  return 0;
+}
+
+async function commandRestore(argv: string[]): Promise<number> {
+  const parsed = parseArgs(argv);
+  const root = stringFlag(parsed, "output") ?? "generated_repos/idea2repo-project";
+  const restored = await restoreArtifactSnapshot(root, {
+    snapshotId: stringFlag(parsed, "snapshot") ?? undefined,
+    artifactPath: stringFlag(parsed, "artifact") ?? undefined,
+    events: new JsonlEventSink(ensureChild(root, ".idea2repo/trace.jsonl"))
+  });
+  console.log(`Restored ${restored.path} from snapshot ${restored.id}`);
   return 0;
 }
 
@@ -847,6 +907,10 @@ Usage:
   idea2repo generate "research idea" [options]  # legacy alias
   idea2repo plan --output generated_repos/demo
   idea2repo trace --output generated_repos/demo
+  idea2repo stage retry|skip <stage_id> --output generated_repos/demo [--reason text]
+  idea2repo snapshots list --output generated_repos/demo
+  idea2repo restore --snapshot <id> --output generated_repos/demo
+  idea2repo restore --artifact <path> --output generated_repos/demo
   idea2repo literature plan|search|download [--output dir] [--allow-network]
   idea2repo papers analyze [--output dir]
   idea2repo score [--output dir] [--strict-ccf-a]

@@ -54,6 +54,7 @@ export type ResearchPipelineOptions = {
   agentClient?: StagedResearchAgent;
   events?: EventSink;
   runId?: string;
+  signal?: AbortSignal;
   progress?: (message: string) => void;
 };
 
@@ -73,10 +74,17 @@ export type ResearchPipelineResult = {
 export async function runResearchPipeline(idea: string, options: ResearchPipelineOptions = {}): Promise<ResearchPipelineResult> {
   if (!idea.trim()) throw new Error("idea must not be empty");
   const outputRoot = options.outputRoot ?? process.cwd();
+  const runId = options.runId ?? randomUUID();
+  const emitRuntimeEvent = async (event: Idea2RepoEvent): Promise<void> => {
+    await options.events?.emit(event);
+  };
+  if (options.signal?.aborted) {
+    await emitRuntimeEvent({ type: "run.cancelled", run_id: runId, reason: abortReason(options.signal), timestamp: runtimeTimestamp() });
+    throwIfAborted(options.signal);
+  }
   const restoredState = options.outputRoot ? await readResearchPipelineState(outputRoot) : null;
   if (restoredState && restoredState.idea !== idea) throw new Error(`research pipeline state belongs to a different idea: ${restoredState.idea}`);
   let state = restoredState ?? createResearchPipelineState(idea, options.outputRoot);
-  const runId = options.runId ?? randomUUID();
   const warnings: string[] = [];
   const resumedArtifacts: Record<string, string> = {};
   const readArtifact = async (relativePath: string): Promise<string | null> => {
@@ -109,14 +117,12 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     Object.assign(preservedOutputArtifacts, await readArtifacts(readArtifact, stageArtifactPaths(id, extraArtifacts)));
   };
   let activeStage: { id: Parameters<typeof markStage>[1]; label: string } | null = null;
-  const emitRuntimeEvent = async (event: Idea2RepoEvent): Promise<void> => {
-    await options.events?.emit(event);
-  };
   const decisions = options.outputRoot ? new DecisionRecorder(outputRoot, runId, options.events) : null;
   const recordDecision = async (input: Parameters<DecisionRecorder["record"]>[0]): Promise<void> => {
     await decisions?.record(input);
   };
   const setStage = async (id: Parameters<typeof markStage>[1], status: Parameters<typeof markStage>[2], error?: string): Promise<void> => {
+    throwIfAborted(options.signal);
     const stage = researchStages.find((candidate) => candidate.id === id);
     const label = stage?.label ?? id;
     if (status === "running") {
@@ -134,6 +140,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   };
   await emitRuntimeEvent({ type: "run.started", run_id: runId, idea, output_root: outputRoot, timestamp: runtimeTimestamp() });
   try {
+  throwIfAborted(options.signal);
   const agent = createStagedAgent(options);
   const diagnosis = diagnoseIdea(idea, { requestedDomains: options.requestedDomains });
   const route = diagnosis.routes[0]!;
@@ -510,9 +517,19 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
       if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
       await emitRuntimeEvent({ type: "stage.failed", run_id: runId, stage_id: failedStage.id, error: message, timestamp: runtimeTimestamp() });
     }
-    await emitRuntimeEvent({ type: "run.failed", run_id: runId, error: message, timestamp: runtimeTimestamp() });
+    if (options.signal?.aborted) await emitRuntimeEvent({ type: "run.cancelled", run_id: runId, reason: message, timestamp: runtimeTimestamp() });
+    else await emitRuntimeEvent({ type: "run.failed", run_id: runId, error: message, timestamp: runtimeTimestamp() });
     throw error;
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error(signal.reason ? String(signal.reason) : "run cancelled");
+}
+
+function abortReason(signal: AbortSignal | undefined): string {
+  return signal?.reason ? String(signal.reason) : "run cancelled";
 }
 
 function offlineSearchPlan(brief: IdeaBrief, maxPapers: number): SearchPlan {

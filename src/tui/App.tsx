@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import chalk from "chalk";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -14,6 +14,8 @@ import { approvalPolicyForMode, formatApprovals, readApprovalRecords, type Runti
 import { formatDecisions, readDecisionRecords } from "../runtime/decisions.js";
 import { readJsonlEvents } from "../runtime/events.js";
 import { formatPlan, readPlanState } from "../runtime/plan.js";
+import { retryRuntimeStage, skipRuntimeStage } from "../runtime/runs.js";
+import type { ResearchStageId } from "../pipeline/stages.js";
 import {
   activateWorkflowStep,
   completeWorkflowSteps,
@@ -168,6 +170,7 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
   const [activePrompt, setActivePrompt] = useState<ActivePrompt | null>(null);
   const [activeSelect, setActiveSelect] = useState<ActiveSelect | null>(null);
   const [activeDirectoryPicker, setActiveDirectoryPicker] = useState<ActiveDirectoryPicker | null>(null);
+  const activeAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -514,9 +517,35 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
         chooseGithubAction(parts.join(" "));
         return;
       case "/retry":
+        await runBusy(async () => {
+          const stageId = parts[0] as ResearchStageId | undefined;
+          if (!stageId) {
+            append({ role: "error", title: "Stage required", text: "Use /retry search_planning or another runtime stage id." });
+            return;
+          }
+          const result = await retryRuntimeStage(output, stageId, { reason: parts.slice(1).join(" ") || undefined, execute: false });
+          append({ role: "assistant", title: "Stage retry prepared", text: `${result.stage_id} and downstream stages were reset to pending.`, details: [`Snapshots: ${result.snapshots.length}`, `Run: ${result.run_id}`] });
+        });
+        return;
       case "/skip":
+        await runBusy(async () => {
+          const stageId = parts[0] as ResearchStageId | undefined;
+          const reason = parts.slice(1).join(" ").trim();
+          if (!stageId || !reason) {
+            append({ role: "error", title: "Stage and reason required", text: "Use /skip pdf_reading No downloadable PDFs in offline mode." });
+            return;
+          }
+          const result = await skipRuntimeStage(output, stageId, reason);
+          append({ role: "assistant", title: "Stage skipped", text: `${result.stage_id} is blocked with a visible decision record.`, details: [`Run: ${result.run_id}`] });
+        });
+        return;
       case "/cancel":
-        append({ role: "assistant", title: "Runtime action pending", text: `${command} is registered; the underlying runtime action is implemented in the recovery and approval runtime phases.` });
+        if (activeAbortController.current) {
+          activeAbortController.current.abort("cancel requested from TUI");
+          append({ role: "assistant", title: "Cancel requested", text: "The active generation run will stop at the next runtime checkpoint." });
+        } else {
+          append({ role: "assistant", title: "No active run", text: "There is no active generation run to cancel." });
+        }
         return;
       case "/mode":
         chooseRuntimeMode(rest);
@@ -548,13 +577,17 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
     }
     startGenerationRoute(idea, outputOverride);
     await runBusy(async () => {
+      const controller = new AbortController();
+      activeAbortController.current = controller;
       const result = await generateResearchRepo(idea, outputOverride, {
         provider,
         offline: provider === OFFLINE_PROVIDER_ID,
         model,
         reasoningEffort: reasoning,
-        progressCallback: recordProgress
+        progressCallback: recordProgress,
+        signal: controller.signal
       });
+      activeAbortController.current = null;
       setWorkflowSteps((current) => completeWorkflowSteps(current));
       setActivities((current) =>
         mergeActivity(current, {
@@ -576,6 +609,8 @@ export function App({ defaultOutput = "generated_repos/idea2repo-project" }: App
           "Execution plan: docs/execution_plan/12_week_plan.md"
         ]
       });
+    }).finally(() => {
+      activeAbortController.current = null;
     });
   }
 

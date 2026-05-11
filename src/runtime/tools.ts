@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildGithubExportPlan, publishWithGh } from "../github-export.js";
 import { ensureChild, exists } from "../state.js";
+import { snapshotArtifact } from "./artifacts.js";
 import { DecisionRecorder, type DecisionInput } from "./decisions.js";
 import { runtimeTimestamp, type EventSink } from "./events.js";
 import { writePlanState, type PlanState } from "./plan.js";
@@ -157,6 +158,7 @@ export function createCoreToolRegistry(): ToolRegistry {
     async handler(input, ctx) {
       const path = ensureChild(ctx.outputRoot, input.path);
       const content = Buffer.from(input.content, input.encoding ?? "utf8");
+      await snapshotArtifact(ctx.outputRoot, input.path, { runId: ctx.runId, events: ctx.events });
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, content);
       const sha256 = createHash("sha256").update(content).digest("hex");
