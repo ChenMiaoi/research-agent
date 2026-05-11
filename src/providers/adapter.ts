@@ -5,6 +5,7 @@ export type StructuredRequest<T> = {
   promptFile?: string;
   context: unknown;
   schemaName: string;
+  outputSchema?: object;
   validate: (value: unknown) => T;
   model?: string;
   reasoningEffort?: string;

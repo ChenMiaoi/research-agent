@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { generateResearchRepo } from "../src/generator.js";
 import { OFFLINE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "../src/providers.js";
-import { OpenAICodexOAuthAdapter, OfflineAdapter, createProviderAdapter } from "../src/providers/index.js";
+import { CodexCliAdapter, OpenAICodexOAuthAdapter, OfflineAdapter, createProviderAdapter } from "../src/providers/index.js";
 import { validateResearchAnalysis, type ResearchAnalysis } from "../src/types.js";
 
 test("offline provider adapter returns schema-valid deterministic research analysis", async () => {
@@ -33,6 +33,7 @@ test("offline provider adapter returns schema-valid deterministic research analy
 test("provider adapter factory wraps offline and Codex OAuth providers", async () => {
   assert.ok(createProviderAdapter(OFFLINE_PROVIDER_ID) instanceof OfflineAdapter);
   assert.ok(createProviderAdapter(OPENAI_CODEX_PROVIDER_ID) instanceof OpenAICodexOAuthAdapter);
+  assert.ok(createProviderAdapter("openai-codex-cli") instanceof CodexCliAdapter);
   assert.throws(() => createProviderAdapter("missing"), /unsupported provider adapter/);
 });
 

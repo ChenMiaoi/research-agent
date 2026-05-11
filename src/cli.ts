@@ -20,6 +20,7 @@ import { runResearchPipeline } from "./pipeline/research-pipeline.js";
 import { formatDecisions, readDecisionRecords } from "./runtime/decisions.js";
 import { readJsonlEvents } from "./runtime/events.js";
 import { formatPlan, readPlanState } from "./runtime/plan.js";
+import { createProviderAdapter } from "./providers/index.js";
 import { normalizeSources } from "./skills/literature/search.js";
 import type { LiteratureSource } from "./skills/literature/types.js";
 import { acquirePdfs } from "./skills/pdf/acquire.js";
@@ -100,7 +101,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case "logout":
         return await commandAuth(["logout", ...rest]);
       case "provider":
-        return commandProvider(rest);
+        return await commandProvider(rest);
       case "venues":
         return commandVenues(rest);
       case "github":
@@ -529,19 +530,22 @@ async function commandAuth(argv: string[]): Promise<number> {
   throw new Error(`unknown auth action: ${action}`);
 }
 
-function commandProvider(argv: string[]): number {
+async function commandProvider(argv: string[]): Promise<number> {
   const action = argv[0] ?? "list";
   if (action === "list") {
     console.log("openai-codex (default, Codex OAuth)");
     console.log("openai-codex-oauth (legacy alias for openai-codex)");
-    console.log("openai-codex-cli (official CLI wrapper, migration placeholder)");
+    console.log("openai-codex-cli (official CLI wrapper, codex exec structured output)");
     console.log("offline (deterministic fallback)");
     const catalog = loadCodexModelCatalog();
     console.log(`models: ${catalog.models.map((model) => model.id).join(", ")} (${catalog.source})`);
     return 0;
   }
   if (action === "show") {
-    console.log(safeProviderReport(canonicalProvider(argv[1])));
+    const id = canonicalProvider(argv[1]);
+    console.log(safeProviderReport(id));
+    const adapter = createProviderAdapter(id);
+    console.log(JSON.stringify(await adapter.status(), null, 2));
     return 0;
   }
   if (action === "validate") {

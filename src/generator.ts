@@ -18,7 +18,7 @@ import {
 import { diagnoseIdea, type Diagnosis } from "./scoring.js";
 import { safeSecurityReframe, securityGuardrailMarkdown } from "./security.js";
 import { appendRunLog, ensureChild, exists, readManifest, RUN_LOG_PATH, writeManifest, writeText } from "./state.js";
-import { validateResearchAnalysis, type ProjectManifest, type ResearchAnalysis } from "./types.js";
+import { researchAnalysisJsonSchema, validateResearchAnalysis, type ProjectManifest, type ResearchAnalysis } from "./types.js";
 import { inspectWorkspace } from "./workspace.js";
 import { runWorkflow, workflowSummary } from "./workflow.js";
 import { createProviderAdapter } from "./providers/index.js";
@@ -369,14 +369,6 @@ async function analyzeWithProvider(
 ): Promise<ProviderAnalysis> {
   const selectedProvider = canonicalProvider(options.provider, Boolean(options.offline));
   const selectedApiShape = apiShapeForProvider(selectedProvider);
-  if (selectedProvider === CODEX_CLI_PROVIDER_ID) {
-    return {
-      analysis: null,
-      selectedProvider,
-      selectedApiShape,
-      fallbackReason: "codex CLI structured adapter is not enabled in this TypeScript migration yet"
-    };
-  }
   try {
     options.progressCallback?.(`Provider: ${selectedProvider}`);
     const adapter = createProviderAdapter(selectedProvider);
@@ -390,6 +382,7 @@ async function analyzeWithProvider(
         resources: options.resources,
         stack: options.stack
       },
+      outputSchema: researchAnalysisJsonSchema(),
       validate: validateResearchAnalysis,
       model: options.model ?? undefined,
       reasoningEffort: options.reasoningEffort ?? undefined,
