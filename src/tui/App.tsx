@@ -190,7 +190,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   const [activeDirectoryPicker, setActiveDirectoryPicker] = useState<ActiveDirectoryPicker | null>(null);
   const [activeApprovalDialog, setActiveApprovalDialog] = useState<ActiveApprovalDialog | null>(null);
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<TuiRuntimeSnapshot | null>(null);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("evidence");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("overview");
   const activeAbortController = useRef<AbortController | null>(null);
   const busyDepth = useRef(0);
 
@@ -694,7 +694,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     const outputRoot = resolve(outputOverride);
     const policy = approvalPolicyForMode(runtimeMode);
     setRuntimeSnapshot(createTuiRuntimeSnapshot(runId, outputRoot));
-    setInspectorTab("evidence");
+    setInspectorTab("overview");
     let terminalRuntimeEvent = false;
     const runtimeEvents: EventSink = {
       emit: (event) => {
@@ -1309,10 +1309,12 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
   }
 
   async function openCockpitSelection(snapshot: TuiRuntimeSnapshot): Promise<void> {
-    if (inspectorTab === "approvals") {
-      const pending = await pendingApprovalRecords(output);
-      if (pending[0]) {
-        openApprovalDialog(pending[0], output);
+    const pending = snapshot.approvals.find((approval) => !approval.decision);
+    if (pending && (inspectorTab === "overview" || inspectorTab === "plan")) {
+      const records = await pendingApprovalRecords(output);
+      const record = records.find((candidate) => candidate.id === pending.id) ?? records[0];
+      if (record) {
+        openApprovalDialog(record, output);
         return;
       }
     }
@@ -1338,18 +1340,18 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
       });
       return;
     }
-    if (inspectorTab === "papers") {
+    if (inspectorTab === "literature") {
       const paper = latestRuntimeEvent(snapshot, "paper.found");
       const download = latestRuntimeEvent(snapshot, "pdf.downloaded");
       append({
         role: "assistant",
-        title: "Paper card",
+        title: "Literature card",
         text: paper ? `${paper.title}${paper.venue ? ` (${paper.venue}${paper.year ? ` ${paper.year}` : ""})` : ""}` : download ? `${download.paper_id} PDF downloaded` : "No paper candidate yet.",
         details: [paper?.reason, paper?.pdf_status ? `PDF: ${paper.pdf_status}` : "", download?.path ? `Downloaded: ${download.path}` : ""].filter((line): line is string => Boolean(line))
       });
       return;
     }
-    if (inspectorTab === "evidence") {
+    if (inspectorTab === "paper") {
       const evidence = latestRuntimeEvent(snapshot, "evidence.extracted");
       append({
         role: "assistant",
@@ -1414,7 +1416,7 @@ export function App({ defaultOutput = "idea2repo-runs" }: AppProps): React.React
     setRuntimeSnapshot((current) => applyTuiRuntimeEvent(current?.runId === runId ? current : createTuiRuntimeSnapshot(runId, outputRoot), event));
     const approvalRecord = approvalRecordFromRequestedEvent(event, runtimeMode);
     if (approvalRecord) {
-      setInspectorTab("approvals");
+      setInspectorTab("overview");
       openApprovalDialog(approvalRecord, outputRoot);
     }
     const activity = runtimeActivityForEvent(event);
@@ -2909,7 +2911,7 @@ export function cockpitShortcutForInput(input: string, options: { ctrl?: boolean
   const normalized = input.toLowerCase();
   if (normalized === "[") return { type: "previous_tab" };
   if (normalized === "]") return { type: "next_tab" };
-  if (/^[1-6]$/.test(normalized)) return { type: "tab", tab: INSPECTOR_TABS[Number(normalized) - 1] ?? "evidence" };
+  if (/^[1-9]$/.test(normalized)) return { type: "tab", tab: INSPECTOR_TABS[Number(normalized) - 1] ?? "overview" };
   if (!options.ctrl) return null;
   if (normalized === "o") return { type: "open" };
   if (normalized === "a") return { type: "approve" };

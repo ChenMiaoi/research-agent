@@ -103,6 +103,8 @@ test("TUI runtime snapshot follows live runtime events", () => {
   assert.deepEqual(snapshot.artifacts.map((artifact) => artifact.path), ["docs/idea/idea_brief.md"]);
   assert.match(liveDecisionDetails(snapshot).join("\n"), /Accepted initial idea/);
   assert.match(liveApprovalDetails(snapshot).join("\n"), /tool:github.publish/);
+  assert.equal(snapshot.researchSummary.paperStats.found, 0);
+  assert.match(snapshot.researchSummary.nextUserAction, /Approve or deny|Review generated reports/);
   assert.equal(snapshot.status, "completed");
 });
 
@@ -151,25 +153,30 @@ test("research cockpit hides raw trace outside Debug inspector tab", () => {
   ];
   for (const event of events) snapshot = applyTuiRuntimeEvent(snapshot, event);
 
-  const defaultText = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "evidence" }));
+  const defaultText = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "paper" }));
   assert.match(defaultText, /PLAN/);
-  assert.match(defaultText, /RESEARCH THREAD/);
+  assert.match(defaultText, /OVERVIEW/);
   assert.match(defaultText, /INSPECTOR/);
-  assert.match(defaultText, /Evidence/);
-  assert.match(defaultText, /Papers/);
+  assert.match(defaultText, /Overview/);
+  assert.match(defaultText, /Literature/);
+  assert.match(defaultText, /Paper/);
+  assert.match(defaultText, /Idea Lab/);
   assert.match(defaultText, /Score/);
+  assert.match(defaultText, /Reviewers/);
+  assert.match(defaultText, /Plan/);
   assert.match(defaultText, /Artifacts/);
-  assert.match(defaultText, /Approvals/);
   assert.match(defaultText, /Debug/);
   assert.match(defaultText, /Uses page-level evidence/);
+  assert.match(defaultText, /Strict score: 62\/100/);
+  assert.match(defaultText, /Next: Work the top blocker/);
   assert.doesNotMatch(defaultText, /run\.started/);
   assert.doesNotMatch(defaultText, /Trace/);
 
   const debugText = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "debug" }));
   assert.match(debugText, /Debug/);
   assert.match(debugText, /run\.started/);
-  assert.equal(nextInspectorTab("evidence", 1), "papers");
-  assert.equal(nextInspectorTab("evidence", -1), "debug");
+  assert.equal(nextInspectorTab("overview", 1), "literature");
+  assert.equal(nextInspectorTab("overview", -1), "debug");
 });
 
 test("TUI runtime snapshot surfaces blocked stage state", () => {
@@ -251,14 +258,14 @@ test("research cockpit exposes direct actions for inspector cards and stages", (
     snapshot = applyTuiRuntimeEvent(snapshot, event);
   }
 
-  const text = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "approvals" }));
+  const text = textContent(ResearchCockpit({ snapshot, height: 18, width: 120, activeInspectorTab: "overview" }));
   assert.match(text, /Action: approve\/deny/);
   assert.match(text, /0\/14 done/);
   assert.match(text, /blocked/);
-  assert.equal(cockpitActionLine(snapshot, "approvals"), "Action: approve/deny tool:pdf.acquire at pdf_acquisition");
+  assert.equal(cockpitActionLine(snapshot, "overview"), "Action: approve/deny tool:pdf.acquire at pdf_acquisition");
   assert.equal(cockpitStageTarget(snapshot), "pdf_acquisition");
-  assert.deepEqual(cockpitShortcutForInput("1"), { type: "tab", tab: "evidence" });
-  assert.deepEqual(cockpitShortcutForInput("6"), { type: "tab", tab: "debug" });
+  assert.deepEqual(cockpitShortcutForInput("1"), { type: "tab", tab: "overview" });
+  assert.deepEqual(cockpitShortcutForInput("9"), { type: "tab", tab: "debug" });
   assert.deepEqual(cockpitShortcutForInput("o", { ctrl: true }), { type: "open" });
   assert.deepEqual(cockpitShortcutForInput("a", { ctrl: true }), { type: "approve" });
   assert.deepEqual(cockpitShortcutForInput("d", { ctrl: true }), { type: "deny" });
@@ -270,11 +277,11 @@ test("research cockpit exposes direct actions for inspector cards and stages", (
   assert.match(cockpitMutationBlocker(snapshot, "skip") ?? "", /before skipping the stage/);
   assert.match(cockpitMutationBlocker(snapshot, "edit") ?? "", /before editing the idea/);
   assert.equal(cockpitMutationBlocker(snapshot, "approve"), null);
-  const approvalsFallback = cockpitOpenFallbackMessage(snapshot, "approvals");
-  assert.equal(approvalsFallback.title, "No card selected");
-  const approvalsFallbackDetails = approvalsFallback.details?.join("\n") ?? "";
-  assert.equal(approvalsFallbackDetails, "");
-  assert.doesNotMatch(`${approvalsFallback.text}\n${approvalsFallbackDetails}`, /run\.started|artifact\.written|stage\.blocked|approval\.requested/);
+  const overviewFallback = cockpitOpenFallbackMessage(snapshot, "overview");
+  assert.equal(overviewFallback.title, "No card selected");
+  const overviewFallbackDetails = overviewFallback.details?.join("\n") ?? "";
+  assert.equal(overviewFallbackDetails, "");
+  assert.doesNotMatch(`${overviewFallback.text}\n${overviewFallbackDetails}`, /run\.started|artifact\.written|stage\.blocked|approval\.requested/);
   const debugFallback = cockpitOpenFallbackMessage(snapshot, "debug");
   assert.equal(debugFallback.title, "Runtime trace");
   assert.match(debugFallback.details?.join("\n") ?? "", /artifact\.written/);

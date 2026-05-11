@@ -2,9 +2,9 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { Idea2RepoEvent } from "../runtime/events.js";
 import { TracePanel } from "./TracePanel.js";
-import type { TuiRuntimeSnapshot } from "./runtime-view.js";
+import type { TuiRuntimeResearchSummary, TuiRuntimeSnapshot } from "./runtime-view.js";
 
-export const INSPECTOR_TABS = ["evidence", "papers", "score", "artifacts", "approvals", "debug"] as const;
+export const INSPECTOR_TABS = ["overview", "literature", "paper", "idea_lab", "score", "reviewers", "plan", "artifacts", "debug"] as const;
 export type InspectorTab = (typeof INSPECTOR_TABS)[number];
 
 const colors = {
@@ -24,7 +24,7 @@ type CockpitSummary = { completed: number; active: number; blocked: number; skip
 export function nextInspectorTab(current: InspectorTab, direction: -1 | 1): InspectorTab {
   const index = INSPECTOR_TABS.indexOf(current);
   const next = (index + direction + INSPECTOR_TABS.length) % INSPECTOR_TABS.length;
-  return INSPECTOR_TABS[next] ?? "evidence";
+  return INSPECTOR_TABS[next] ?? "overview";
 }
 
 export function ResearchCockpit({
@@ -32,7 +32,7 @@ export function ResearchCockpit({
   height,
   width,
   compact = false,
-  activeInspectorTab = "evidence"
+  activeInspectorTab = "overview"
 }: {
   snapshot: TuiRuntimeSnapshot;
   height: number;
@@ -120,7 +120,7 @@ function ResearchThreadPanel({ snapshot, height, width }: { snapshot: TuiRuntime
   const push = (line: React.ReactElement): void => {
     if (lines.length < innerRows) lines.push(line);
   };
-  push(<Title key="thread-title" label="RESEARCH THREAD" />);
+  push(<Title key="thread-title" label="OVERVIEW" />);
   push(
     <Text key="thread-status">
       <Text color={statusColor(snapshot.status)}>{snapshot.status}</Text>
@@ -129,6 +129,13 @@ function ResearchThreadPanel({ snapshot, height, width }: { snapshot: TuiRuntime
     </Text>
   );
   if (snapshot.message) push(<Text key="thread-message" color={snapshot.status === "failed" ? colors.danger : colors.warning}>{compactText(snapshot.message, width)}</Text>);
+  for (const [index, line] of summaryLines(snapshot.researchSummary, Math.max(0, innerRows - lines.length)).entries()) {
+    push(
+      <Text key={`summary-${index}`} color={line.color}>
+        {compactText(line.text, width)}
+      </Text>
+    );
+  }
   const entries = researchThreadEntries(snapshot.events);
   const remaining = Math.max(0, innerRows - lines.length);
   for (const [index, entry] of entries.slice(-remaining).entries()) {
@@ -207,19 +214,24 @@ export function cockpitActionLine(snapshot: TuiRuntimeSnapshot, tab: InspectorTa
   if (pending) return `Action: approve/deny ${pending.action}${pending.stage_id ? ` at ${pending.stage_id}` : ""}`;
   if (activeStage?.status === "blocked") return `Action: retry/skip ${activeStage.stage_id}`;
   if (tab === "artifacts" && snapshot.artifacts.length) return `Action: open ${snapshot.artifacts.at(-1)?.path}`;
-  if (tab === "evidence" && snapshot.events.some((event) => event.type === "evidence.extracted")) return "Action: open latest evidence card";
-  if (tab === "papers" && snapshot.events.some((event) => event.type === "paper.found" || event.type === "pdf.downloaded")) return "Action: open latest paper card";
+  if (tab === "overview") return snapshot.researchSummary.nextUserAction;
+  if (tab === "literature" && snapshot.events.some((event) => event.type === "paper.found" || event.type === "pdf.downloaded")) return "Action: inspect candidate set";
+  if (tab === "paper" && snapshot.events.some((event) => event.type === "paper.found" || event.type === "evidence.extracted")) return "Action: open latest paper or evidence card";
+  if (tab === "idea_lab") return "Action: answer clarification questions or edit the idea";
   if (tab === "score" && snapshot.events.some((event) => event.type === "score.updated")) return "Action: open score card";
+  if (tab === "reviewers") return snapshot.researchSummary.reviewerStats.openTasks ? "Action: resolve reviewer rebuttal tasks" : "Action: inspect reviewer panel";
+  if (tab === "plan") return activeStage ? `Action: inspect ${activeStage.stage_id ?? activeStage.id}` : "Action: inspect current plan";
   if (tab === "debug") return "Action: inspect runtime event trace";
-  return "Action: edit idea, switch inspector, or wait for the next research event";
+  return snapshot.researchSummary.nextUserAction;
 }
 
 function tabBarLines(active: InspectorTab, width: number): React.ReactElement[] {
   const labels = INSPECTOR_TABS.map((tab) => (tab === active ? `[${tabLabel(tab)}]` : tabLabel(tab)));
-  if (width < 56) {
+  if (width < 72) {
     return [
       <Text key="inspector-tabs-a" color={colors.muted}>{labels.slice(0, 3).join(" ")}</Text>,
-      <Text key="inspector-tabs-b" color={colors.muted}>{labels.slice(3).join(" ")}</Text>
+      <Text key="inspector-tabs-b" color={colors.muted}>{labels.slice(3, 6).join(" ")}</Text>,
+      <Text key="inspector-tabs-c" color={colors.muted}>{labels.slice(6).join(" ")}</Text>
     ];
   }
   return [<Text key="inspector-tabs" color={colors.muted}>{labels.join(" ")}</Text>];
@@ -227,23 +239,38 @@ function tabBarLines(active: InspectorTab, width: number): React.ReactElement[] 
 
 function inspectorLines(snapshot: TuiRuntimeSnapshot, tab: Exclude<InspectorTab, "debug">, limit: number): Array<{ text: string; color: string }> {
   if (limit <= 0) return [];
-  if (tab === "evidence") {
-    const events = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "evidence.extracted" }> => event.type === "evidence.extracted");
-    if (!events.length) return [{ text: "No extracted evidence yet.", color: colors.dim }];
-    return events.slice(-limit).map((event) => ({
-      text: `${event.claim_type} ${event.paper_id} p.${event.page}: ${event.claim}`,
-      color: colors.text
-    }));
+  if (tab === "overview") {
+    return summaryLines(snapshot.researchSummary, limit);
   }
-  if (tab === "papers") {
+  if (tab === "literature") {
+    const stats = snapshot.researchSummary.paperStats;
+    const papers = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "paper.found" }> => event.type === "paper.found");
+    const lines = [
+      `Papers ${stats.found} found | CCF-A ${stats.ccfA} | main/full ${stats.mainTrack}`,
+      `PDFs ${stats.downloaded} downloaded | verified evidence papers ${stats.verifiedEvidence}`,
+      ...papers.slice(-Math.max(0, limit - 2)).map((event) => `${event.title}${event.venue ? ` (${event.venue}${event.year ? ` ${event.year}` : ""})` : ""} | ${event.ccf_rank ?? "unknown"} | ${event.track_status ?? "unknown"} | ${event.pdf_status ?? "unknown"}`)
+    ];
+    return lines.slice(0, limit).map((text, index) => ({ text, color: index < 2 ? colors.muted : colors.text }));
+  }
+  if (tab === "paper") {
+    const events = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "evidence.extracted" }> => event.type === "evidence.extracted");
     const papers = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "paper.found" }> => event.type === "paper.found");
     const downloads = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "pdf.downloaded" }> => event.type === "pdf.downloaded");
     const lines = [
-      ...papers.map((event) => `${event.title}${event.venue ? ` (${event.venue}${event.year ? ` ${event.year}` : ""})` : ""}${event.pdf_status ? ` - ${event.pdf_status}` : ""}`),
-      ...downloads.map((event) => `${event.paper_id} PDF downloaded: ${event.path}`)
+      ...papers.slice(-2).map((event) => `Candidate: ${event.title}${event.venue ? ` (${event.venue}${event.year ? ` ${event.year}` : ""})` : ""}${event.reason ? ` | ${event.reason}` : ""}`),
+      ...downloads.slice(-2).map((event) => `PDF: ${event.paper_id} downloaded to ${event.path}`),
+      ...events.slice(-Math.max(0, limit - 4)).map((event) => `${event.claim_type} ${event.paper_id} p.${event.page}: ${event.claim}`)
     ];
-    if (!lines.length) return [{ text: "No paper candidates recorded yet.", color: colors.dim }];
+    if (!lines.length) return [{ text: "No paper candidate or evidence recorded yet.", color: colors.dim }];
     return lines.slice(-limit).map((text) => ({ text, color: colors.text }));
+  }
+  if (tab === "idea_lab") {
+    const questions = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "question.asked" }> => event.type === "question.asked");
+    const lines = [
+      snapshot.researchSummary.optimizedIdea ?? "Optimized idea: pending",
+      ...questions.slice(-Math.max(0, limit - 1)).map((event) => `Question: ${event.question} | ${event.why_it_matters}`)
+    ];
+    return lines.slice(0, limit).map((text, index) => ({ text, color: index === 0 ? colors.muted : colors.warning }));
   }
   if (tab === "score") {
     const scores = snapshot.events.filter((event): event is Extract<Idea2RepoEvent, { type: "score.updated" }> => event.type === "score.updated");
@@ -254,6 +281,26 @@ function inspectorLines(snapshot: TuiRuntimeSnapshot, tab: Exclude<InspectorTab,
       ...latest.hard_blockers.slice(0, Math.max(0, limit - 1)).map((blocker) => ({ text: `Blocker: ${blocker}`, color: colors.warning }))
     ].slice(0, limit);
   }
+  if (tab === "reviewers") {
+    const stats = snapshot.researchSummary.reviewerStats;
+    const reviewerArtifacts = snapshot.artifacts
+      .filter((artifact) => /docs\/diagnosis\/reviewer_[123]\.md$/i.test(artifact.path.replace(/\\/g, "/")))
+      .map((artifact) => artifact.path);
+    const lines = [
+      `Reviewers ${stats.reviewers}/3 | open tasks ${stats.openTasks} | resolved ${stats.resolvedTasks}`,
+      ...reviewerArtifacts,
+      ...(snapshot.artifacts.some((artifact) => /docs\/diagnosis\/rebuttal_tasks\.md$/i.test(artifact.path.replace(/\\/g, "/"))) ? ["docs/diagnosis/rebuttal_tasks.md"] : [])
+    ];
+    if (lines.length === 1) lines.push("Reviewer panel has not been generated yet.");
+    return lines.slice(0, limit).map((text, index) => ({ text, color: index === 0 ? colors.muted : colors.text }));
+  }
+  if (tab === "plan") {
+    if (!snapshot.plan.items.length) return [{ text: "No plan items yet.", color: colors.dim }];
+    return snapshot.plan.items.slice(0, limit).map((item) => {
+      const suffix = item.blocker ? ` | ${item.blocker}` : item.next_actions[0] ? ` | ${item.next_actions[0]}` : "";
+      return { text: `${item.status} ${item.step}${suffix}`, color: item.status === "blocked" ? colors.warning : colors.text };
+    });
+  }
   if (tab === "artifacts") {
     if (!snapshot.artifacts.length) return [{ text: "No artifacts written yet.", color: colors.dim }];
     return snapshot.artifacts.slice(0, limit).map((artifact) => ({
@@ -261,15 +308,19 @@ function inspectorLines(snapshot: TuiRuntimeSnapshot, tab: Exclude<InspectorTab,
       color: colors.text
     }));
   }
-  if (tab === "approvals") {
-    if (!snapshot.approvals.length) return [{ text: "No approvals requested yet.", color: colors.dim }];
-    return snapshot.approvals.slice(-limit).map((approval) => {
-      const suffix = approval.decision ? ` -> ${approval.decision}` : approval.risk ? ` [${approval.risk}]` : "";
-      const stage = approval.stage_id ? ` (${approval.stage_id})` : "";
-      return { text: `${approval.action}${stage}${suffix}`, color: approval.decision === "approved" ? colors.success : colors.warning };
-    });
-  }
   return [];
+}
+
+function summaryLines(summary: TuiRuntimeResearchSummary, limit: number): Array<{ text: string; color: string }> {
+  const score = summary.currentScore ? `${summary.currentScore.score}/${summary.currentScore.maxScore} confidence ${summary.currentScore.confidence}` : "pending";
+  const lines = [
+    { text: `Optimized idea: ${summary.optimizedIdea ?? "pending"}`, color: colors.muted },
+    { text: `Strict score: ${score}`, color: summary.currentScore ? colors.accent : colors.dim },
+    { text: `Fatal blockers: ${summary.fatalBlockers.slice(0, 3).join("; ") || "none recorded"}`, color: summary.fatalBlockers.length ? colors.warning : colors.success },
+    { text: `Papers: ${summary.paperStats.found} found | ${summary.paperStats.ccfA} CCF-A | ${summary.paperStats.downloaded} PDFs | ${summary.paperStats.verifiedEvidence} verified`, color: colors.text },
+    { text: `Next: ${summary.nextUserAction}`, color: colors.accent }
+  ];
+  return lines.slice(0, limit);
 }
 
 function planSummary(snapshot: TuiRuntimeSnapshot): CockpitSummary {
@@ -353,11 +404,14 @@ function researchThreadEntries(events: Idea2RepoEvent[]): ResearchThreadEntry[] 
 }
 
 function tabLabel(tab: InspectorTab): string {
-  if (tab === "evidence") return "Evidence";
-  if (tab === "papers") return "Papers";
+  if (tab === "overview") return "Overview";
+  if (tab === "literature") return "Literature";
+  if (tab === "paper") return "Paper";
+  if (tab === "idea_lab") return "Idea Lab";
   if (tab === "score") return "Score";
+  if (tab === "reviewers") return "Reviewers";
+  if (tab === "plan") return "Plan";
   if (tab === "artifacts") return "Artifacts";
-  if (tab === "approvals") return "Approvals";
   return "Debug";
 }
 
