@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startApiServer } from "../src/api.js";
+import { ApprovalRecorder, approvalPolicyForMode } from "../src/runtime/approvals.js";
+import { listArtifactSnapshots } from "../src/runtime/artifacts.js";
 import { readJsonlEvents } from "../src/runtime/events.js";
 
 test("runtime API starts runs and streams shared runtime events over SSE", async () => {
@@ -62,6 +64,23 @@ test("runtime API starts runs and streams shared runtime events over SSE", async
     const retried = await postJson(`${server.url}/runs/${started.run_id}/stages/search_planning/retry`, { execute: false, reason: "Manual API retry preparation." });
     assert.equal(retried.action, "retry");
     assert.equal(retried.stage_id, "search_planning");
+    const snapshots = await listArtifactSnapshots(output);
+    assert.ok(snapshots.length > 0);
+    const restored = await postJson(`${server.url}/runs/${started.run_id}/artifacts/restore`, { snapshot_id: snapshots[0]!.id });
+    assert.equal(restored.id, snapshots[0]!.id);
+    const pending = await new ApprovalRecorder(output, approvalPolicyForMode("publish")).request({
+      run_id: String(started.run_id),
+      action: "Manual API approval test",
+      risk: ["publish"]
+    });
+    const approval = await postJson(`${server.url}/runs/${started.run_id}/approvals/${pending.id}`, { decision: "denied", reason: "API fanout test." });
+    assert.equal(approval.status, "denied");
+    const controlEventsText = await (await fetch(`${server.url}/runs/${started.run_id}/events`)).text();
+    assert.match(controlEventsText, /event: stage\.skipped/);
+    assert.match(controlEventsText, /event: plan\.updated/);
+    assert.match(controlEventsText, /event: decision\.recorded/);
+    assert.match(controlEventsText, /event: artifact\.restored/);
+    assert.match(controlEventsText, /event: approval\.resolved/);
     const cancelled = await postJson(`${server.url}/runs/${started.run_id}/cancel`, { reason: "No-op cancel after completion." });
     assert.equal(cancelled.status, "completed");
   } finally {

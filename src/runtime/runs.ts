@@ -103,6 +103,11 @@ export class RunManager {
     return this.runs.get(runId)?.bus.subscribe(listener) ?? null;
   }
 
+  eventSink(runId: string): EventSink | null {
+    const run = this.runs.get(runId);
+    return run ? { emit: (event) => run.bus.emit(event) } : null;
+  }
+
   async cancel(runId: string, reason = "cancel requested"): Promise<RuntimeRunSnapshot | null> {
     const run = this.runs.get(runId);
     if (!run) return null;

@@ -15,7 +15,8 @@ import { readApprovalRecords, resolveApprovalRecord } from "./runtime/approvals.
 import { readDecisionRecords } from "./runtime/decisions.js";
 import { readPlanState } from "./runtime/plan.js";
 import { isFinalStatus, retryRuntimeStage, RunManager, skipRuntimeStage, type RuntimeRunRecord } from "./runtime/runs.js";
-import type { Idea2RepoEvent } from "./runtime/events.js";
+import { CompositeEventSink, JsonlEventSink, type Idea2RepoEvent, type EventSink } from "./runtime/events.js";
+import { restoreArtifactSnapshot } from "./runtime/artifacts.js";
 import type { ResearchStageId } from "./pipeline/stages.js";
 
 export type ApiServer = {
@@ -172,6 +173,7 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
       if (stageAction[2] === "retry") {
         const result = await retryRuntimeStage(run.output_root, stageId, {
           runId: run.id,
+          events: runControlEvents(runManager, run),
           reason: stringOrNull(body.reason) ?? undefined,
           execute: body.execute !== false,
           allowNetwork: Boolean(body.allow_network),
@@ -181,15 +183,28 @@ async function route(request: IncomingMessage, response: ServerResponse, runMana
         sendJson(response, 200, result as unknown as Record<string, unknown>);
         return;
       }
-      const result = await skipRuntimeStage(run.output_root, stageId, requiredString(body.reason, "reason"), { runId: run.id });
+      const result = await skipRuntimeStage(run.output_root, stageId, requiredString(body.reason, "reason"), { runId: run.id, events: runControlEvents(runManager, run) });
       sendJson(response, 200, result as unknown as Record<string, unknown>);
+      return;
+    }
+    if (suffix === "artifacts/restore") {
+      const record = await restoreArtifactSnapshot(run.output_root, {
+        snapshotId: stringOrNull(body.snapshot_id) ?? stringOrNull(body.snapshot) ?? undefined,
+        artifactPath: stringOrNull(body.artifact) ?? undefined,
+        runId: run.id,
+        events: runControlEvents(runManager, run)
+      });
+      sendJson(response, 200, record as unknown as Record<string, unknown>);
       return;
     }
     const approvalAction = /^approvals\/([^/]+)$/.exec(suffix);
     if (approvalAction) {
       const decision = body.decision === "approved" ? "approved" : body.decision === "denied" ? "denied" : null;
       if (!decision) throw new HttpError(400, "decision must be approved or denied");
-      const record = await resolveApprovalRecord(run.output_root, decodeURIComponent(approvalAction[1]!), decision, { reason: stringOrNull(body.reason) ?? undefined });
+      const record = await resolveApprovalRecord(run.output_root, decodeURIComponent(approvalAction[1]!), decision, {
+        reason: stringOrNull(body.reason) ?? undefined,
+        events: runControlEvents(runManager, run)
+      });
       sendJson(response, 200, record as unknown as Record<string, unknown>);
       return;
     }
@@ -374,6 +389,13 @@ function sendSse(response: ServerResponse, runManager: RunManager, run: RuntimeR
 function writeSseEvent(response: ServerResponse, event: Idea2RepoEvent): void {
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function runControlEvents(runManager: RunManager, run: RuntimeRunRecord): EventSink {
+  const sinks: EventSink[] = [new JsonlEventSink(join(run.output_root, ".idea2repo", "trace.jsonl"))];
+  const live = runManager.eventSink(run.id);
+  if (live) sinks.push(live);
+  return new CompositeEventSink(sinks);
 }
 
 function runSnapshot(run: RuntimeRunRecord): Record<string, unknown> {
