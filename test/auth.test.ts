@@ -4,7 +4,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadAgentPrompt } from "../src/agents/agent-runner.js";
-import { validateStrictCcfAReview } from "../src/agents/schemas.js";
+import { validatePdfPaperNote, validateStrictCcfAReview } from "../src/agents/schemas.js";
 import { AuthStorage, CodexOAuthClient, authPath, parseUsageSnapshot } from "../src/auth/codex-oauth.js";
 
 test("AuthStorage stores Codex OAuth credentials outside generated repos with restricted permissions", async () => {
@@ -196,6 +196,34 @@ test("strict CCF-A reviewer prompt and schema use the canonical rubric", async (
       }),
     /StrictCcfAReview/
   );
+});
+
+test("PDF paper reader prompt and schema require page quote and chunk id", async () => {
+  const prompt = await loadAgentPrompt("03_pdf_paper_reader.md");
+  assert.match(prompt, /page number, exact quote, and the source `chunk_id`/);
+  assert.match(prompt, /page\/quote\/chunk_id\/confidence/);
+
+  const valid = {
+    paper_id: "paper-1",
+    title_verified: true,
+    summary: "summary",
+    main_problem: "problem",
+    core_method: "method",
+    main_claims: [{ claim: "claim", evidence_quote: "quote", page: 1, chunk_id: "p1-c1", confidence: "high" }],
+    datasets: [],
+    baselines: [],
+    metrics: [],
+    strengths: [],
+    weaknesses: [],
+    limitations: [],
+    relevance_to_current_idea: "relevant",
+    difference_from_current_idea: "different",
+    collision_risk: "low",
+    useful_for: [],
+    unreadable_or_missing_parts: []
+  };
+  assert.equal(validatePdfPaperNote(valid).main_claims[0]?.chunk_id, "p1-c1");
+  assert.throws(() => validatePdfPaperNote({ ...valid, main_claims: [{ claim: "claim", evidence_quote: "quote", page: 1, confidence: "high" }] }), /chunk_id/);
 });
 
 test("staged reviewer prompts enforce reviewer identities and mandatory task limits", async () => {

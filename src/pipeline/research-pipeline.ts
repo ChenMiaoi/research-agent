@@ -1940,6 +1940,7 @@ async function paperNotesFromArtifacts(readArtifact: (relativePath: string) => P
         claim: "Recovered verified paper-note artifact for resumed analysis.",
         evidence_quote: ref.quote,
         page: ref.page,
+        chunk_id: ref.chunk_id,
         confidence: "low" as const
       })),
       datasets: [],
@@ -2101,7 +2102,9 @@ function verifiedPaperNotesAgainstChunks(notes: PdfPaperNote[], chunks: PdfChunk
 }
 
 function evidenceChunkForClaim(claim: PdfPaperNote["main_claims"][number], chunks: PdfChunkIndexEntry[]): PdfChunkIndexEntry | null {
-  return chunks.find((chunk) => chunk.page === claim.page && textContainsQuote(chunk.text, claim.evidence_quote)) ?? null;
+  const chunk = chunks.find((candidate) => candidate.chunk_id === claim.chunk_id);
+  if (!chunk || chunk.page !== claim.page || !textContainsQuote(chunk.text, claim.evidence_quote)) return null;
+  return chunk;
 }
 
 function textContainsQuote(text: string, quote: string): boolean {

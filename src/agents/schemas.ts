@@ -67,6 +67,7 @@ export const PdfPaperNoteSchema = Type.Object(
           claim: Type.String(),
           evidence_quote: Type.String(),
           page: Type.Integer({ minimum: 1 }),
+          chunk_id: Type.String(),
           confidence: ConfidenceSchema
         },
         { additionalProperties: false }
