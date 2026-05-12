@@ -140,6 +140,7 @@ test("research-native runtime events round-trip through JSONL", async () => {
         timestamp: "2026-05-11T00:00:01Z"
       },
       { type: "evidence.extracted", run_id: "run-1", evidence_id: "e1", paper_id: "p1", claim: "PDF evidence mentions baseline comparison.", claim_type: "baseline", page: 1, quote: "baseline comparison", chunk_id: "p1-p1-c1", confidence: 0.6, timestamp: "2026-05-11T00:00:02Z" },
+      { type: "paper.note.written", run_id: "run-1", paper_id: "p1", path: "docs/reference/paper_notes/p1.md", status: "verified", evidence_rows: 1, title: "Paper", timestamp: "2026-05-11T00:00:02Z" },
       { type: "question.asked", run_id: "run-1", question_id: "q1", question: "Which dataset is primary?", why_it_matters: "Experimental rigor is underspecified.", related_score_dimensions: ["Experimental Rigor"], evidence_refs: ["e1"], options: ["A", "B"], required: true, timestamp: "2026-05-11T00:00:03Z" },
       { type: "reviewer.reported", run_id: "run-1", reviewer_id: "R1", role: "Novelty / Related Work", verdict: "Weak reject", artifact: "docs/diagnosis/reviewer_1.md", open_tasks: 1, timestamp: "2026-05-11T00:00:04Z" },
       { type: "rebuttal.task.created", run_id: "run-1", task_id: "R1-M1", reviewer_id: "R1", title: "Add related work.", binding_type: "score_dimension", binding_ref: "related_work", score_dimension: "related_work", evidence_refs: ["e1"], timestamp: "2026-05-11T00:00:05Z" },

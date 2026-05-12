@@ -100,6 +100,16 @@ export type Idea2RepoEvent =
       timestamp: string;
     }
   | {
+      type: "paper.note.written";
+      run_id: string;
+      paper_id: string;
+      path: string;
+      status: "verified" | "metadata_only";
+      evidence_rows: number;
+      title?: string;
+      timestamp: string;
+    }
+  | {
       type: "question.asked";
       run_id: string;
       question_id: string;

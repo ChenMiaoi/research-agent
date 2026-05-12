@@ -524,7 +524,6 @@ test("research pipeline creates metadata-only notes for core papers without PDFs
     let state = createResearchPipelineState(idea, root);
     state = markStage(state, "literature_search", "completed");
     await writeResearchPipelineState(root, state);
-
     const result = await runResearchPipeline(idea, {
       outputRoot: root,
       provider: "offline",
@@ -533,12 +532,145 @@ test("research pipeline creates metadata-only notes for core papers without PDFs
     const firstNote = result.artifacts["docs/reference/paper_notes/core-no-pdf-1.md"] ?? "";
     const secondNote = result.artifacts["docs/reference/paper_notes/core-no-pdf-2.md"] ?? "";
     assert.match(firstNote, /evidence_status = unverified/);
+    assert.match(firstNote, /Status: Metadata-only, not valid for strict CCF-A evidence/);
+    assert.match(firstNote, /How This Paper Affects Our Idea/);
     assert.match(firstNote, /Metadata-only note/);
     assert.match(firstNote, /chunk_id: missing/);
     assert.match(secondNote, /evidence_status = unverified/);
     assert.match(result.artifacts["docs/reference/paper_notes/README.md"] ?? "", /Metadata-only unverified notes: 2/);
     assert.equal(result.verifiedPapers.length, 0);
     assert.doesNotMatch(result.artifacts["docs/relative_work/related_work_matrix.csv"] ?? "", /Core Agent Benchmark Without PDF/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline upgrades deterministic PDF notes to required closure schema and emits note events", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-deterministic-note-"));
+  const idea = "Build an LLM agent benchmark.";
+  const quote = "Deterministic note evidence compares a baseline on a dataset with an accuracy metric and limitation.";
+  try {
+    await writeValidPdfProvenance(root, "deterministic-paper", `${quote} The method evaluates reproducibility.`);
+    const corePdf = await readFile(join(root, "docs/reference/pdfs/deterministic-paper.pdf"));
+    const nonCorePdf = Buffer.from(`%PDF-1.4\n/Type /Page\nstream\nNon-core evidence mentions a baseline dataset metric but should not become a final selected note.\nendstream\n%%EOF\n`, "latin1");
+    await writeBinaryArtifact(root, "docs/reference/pdfs/non-core-paper.pdf", nonCorePdf);
+    await writeArtifact(root, "docs/reference/pdf_manifest.json", JSON.stringify([
+      {
+        paper_id: "deterministic-paper",
+        pdf_path: "docs/reference/pdfs/deterministic-paper.pdf",
+        pdf_sha256: sha256(corePdf),
+        source_url: "https://arxiv.org/pdf/deterministic-paper",
+        downloaded_at: "2026-05-11T00:00:00Z",
+        bytes: corePdf.byteLength,
+        license_hint: "arXiv",
+        title_match_score: 1,
+        status: "downloaded"
+      },
+      {
+        paper_id: "non-core-paper",
+        pdf_path: "docs/reference/pdfs/non-core-paper.pdf",
+        pdf_sha256: sha256(nonCorePdf),
+        source_url: "https://arxiv.org/pdf/non-core-paper",
+        downloaded_at: "2026-05-11T00:00:00Z",
+        bytes: nonCorePdf.byteLength,
+        license_hint: "arXiv",
+        title_match_score: 1,
+        status: "downloaded"
+      }
+    ], null, 2) + "\n");
+    const candidates = [
+      pipelineCandidate("deterministic-paper", "Deterministic Agent Benchmark", "NeurIPS", ["https://arxiv.org/pdf/deterministic-paper"]),
+      pipelineCandidate("metadata-paper", "Metadata Only Agent Benchmark", "NeurIPS"),
+      pipelineCandidate("non-core-paper", "Non Core Workshop Agent Benchmark", "NeurIPS Workshop", ["https://arxiv.org/pdf/non-core-paper"])
+    ];
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify(candidates, null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nOne PDF-backed paper and one metadata-only core paper.\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    state = markStage(state, "pdf_acquisition", "completed");
+    await writeResearchPipelineState(root, state);
+    const events: Array<{ type: string; paper_id?: string; status?: string; evidence_rows?: number; path?: string }> = [];
+
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "offline",
+      strictCcfA: true,
+      events: {
+        emit: (event) => {
+          events.push(event);
+        }
+      }
+    });
+
+    const note = result.artifacts["docs/reference/paper_notes/deterministic-paper.md"] ?? "";
+    for (const heading of [
+      "Metadata",
+      "What This Paper Studies",
+      "Main Contribution",
+      "Method",
+      "Evidence",
+      "Datasets / Benchmarks",
+      "Baselines",
+      "Metrics",
+      "Strengths",
+      "Limitations",
+      "Relation to Current Idea",
+      "Difference from Current Idea",
+      "Collision Risk",
+      "How This Paper Affects Our Idea"
+    ]) {
+      assert.match(note, new RegExp(`## ${heading.replace("/", "\\/")}`));
+    }
+    assert.match(note, /- PDF: docs\/reference\/pdfs\/deterministic-paper\.pdf/);
+    assert.match(note, /- SHA256: [a-f0-9]{64}/);
+    assert.match(note, /- Extraction quality:/);
+    assert.match(note, /Page: 1/);
+    assert.match(note, /Chunk: p1-c1/);
+    assert.match(note, /chunk_id: p1-c1/);
+    assert.equal(result.artifacts["docs/reference/paper_notes/non-core-paper.md"], undefined);
+    assert.doesNotMatch(result.artifacts["docs/relative_work/related_work_matrix.csv"] ?? "", /Metadata Only Agent Benchmark/);
+
+    const noteEvents = events.filter((event) => event.type === "paper.note.written");
+    assert.equal(noteEvents.filter((event) => event.paper_id === "deterministic-paper").length, 1);
+    assert.equal(noteEvents.find((event) => event.paper_id === "deterministic-paper")?.status, "verified");
+    assert.equal(noteEvents.find((event) => event.paper_id === "deterministic-paper")?.evidence_rows, 1);
+    assert.equal(noteEvents.filter((event) => event.paper_id === "metadata-paper").length, 1);
+    assert.equal(noteEvents.find((event) => event.paper_id === "metadata-paper")?.status, "metadata_only");
+    assert.equal(noteEvents.some((event) => event.paper_id === "non-core-paper"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("research pipeline does not write paper notes for all-non-core fallback candidates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "idea2repo-pipeline-non-core-notes-"));
+  const idea = "Build an LLM agent benchmark.";
+  try {
+    await writeValidPdfProvenance(root, "workshop-paper", "Workshop-only evidence mentions a baseline dataset metric but is not selected core evidence.");
+    const candidates = [pipelineCandidate("workshop-paper", "Workshop Agent Benchmark", "NeurIPS Workshop", ["https://arxiv.org/pdf/workshop-paper"])];
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify(candidates, null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nOnly non-core workshop candidates.\n");
+    let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
+    state = markStage(state, "pdf_acquisition", "completed");
+    await writeResearchPipelineState(root, state);
+    const events: Array<{ type: string; paper_id?: string }> = [];
+
+    const result = await runResearchPipeline(idea, {
+      outputRoot: root,
+      provider: "offline",
+      strictCcfA: true,
+      events: {
+        emit: (event) => {
+          events.push(event);
+        }
+      }
+    });
+
+    assert.equal(result.artifacts["docs/reference/paper_notes/workshop-paper.md"], undefined);
+    assert.match(result.artifacts["docs/reference/paper_notes/README.md"] ?? "", /Total notes: 0/);
+    assert.equal(events.some((event) => event.type === "paper.note.written" && event.paper_id === "workshop-paper"), false);
+    assert.equal(result.verifiedPapers.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -669,7 +801,6 @@ test("research pipeline ignores resumed chunks without validated PDF provenance"
     let state = createResearchPipelineState(idea, root);
     state = markStage(state, "pdf_reading", "completed");
     await writeResearchPipelineState(root, state);
-
     const result = await runResearchPipeline(idea, {
       outputRoot: root,
       provider: "offline",
@@ -766,11 +897,98 @@ test("research pipeline preserves resumed paper note artifacts", async () => {
   const idea = "Build an LLM agent benchmark.";
   try {
     const chunks = await writeValidPdfProvenance(root, "paper-1", "unique trusted analysis evidence compares a baseline on a dataset with an accuracy metric and a limitation.");
-    const note = "# paper-1\n\n## Problem\n\nUNIQUE RESUMED NOTE\n\n## Method\n\nVerified method.\n\n## Claims And Evidence\n\n- Claim: preserved\n  - Page: 1\n  - Quote: unique\n  - Chunk: p1-c1\n\n## Limitations\n\nVerified limitation.\n";
+    const manifest = JSON.parse(await readFile(join(root, "docs/reference/pdf_manifest.json"), "utf8")) as PdfManifestRecord[];
+    const record = manifest[0]!;
+    const candidate = pipelineCandidate("paper-1", "Preserved Agent Benchmark", "NeurIPS", [record.source_url ?? "https://arxiv.org/pdf/paper-1"]);
+    const note = `# Preserved Agent Benchmark
+
+Evidence Status: verified
+
+evidence_status = verified
+
+## Metadata
+
+- Paper ID: paper-1
+- Title: Preserved Agent Benchmark
+- Authors: A. Researcher
+- Venue: NeurIPS
+- Year: 2026
+- CCF rank: A
+- PDF: ${record.pdf_path}
+- SHA256: ${record.pdf_sha256}
+- Extraction quality: ok; 1 parsed chunk(s)
+
+## What This Paper Studies
+
+UNIQUE RESUMED NOTE
+
+## Main Contribution
+
+Verified contribution.
+
+## Method
+
+Verified method.
+
+## Evidence
+
+| Claim | Page | Quote | Chunk |
+| ----- | ---: | ----- | ----- |
+| preserved | 1 | unique | p1-c1 |
+
+## Claims And Evidence
+
+- Claim: preserved
+  - Page: 1
+  - Quote: unique
+  - Chunk: p1-c1
+  - chunk_id: p1-c1
+
+## Datasets / Benchmarks
+
+- dataset
+
+## Baselines
+
+- baseline
+
+## Metrics
+
+- accuracy metric
+
+## Strengths
+
+- Verified evidence.
+
+## Limitations
+
+Verified limitation.
+
+## Relation to Current Idea
+
+Relevant.
+
+## Difference from Current Idea
+
+Different.
+
+## Collision Risk
+
+low
+
+## How This Paper Affects Our Idea
+
+- Must avoid: overlap.
+- Can borrow: benchmark.
+- Need to beat: baseline.
+`;
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify([candidate], null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nResumed candidate.\n");
     await writeArtifact(root, "docs/reference/paper_notes/README.md", "# Paper Notes\n\nResumed.\n");
     await writeArtifact(root, "docs/reference/paper_notes/paper-1.md", note);
     await writeArtifact(root, "docs/reference/pdf_chunks.json", JSON.stringify(chunks, null, 2) + "\n");
     let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
     state = markStage(state, "pdf_acquisition", "completed");
     state = markStage(state, "pdf_reading", "completed");
     await writeResearchPipelineState(root, state);
@@ -794,13 +1012,100 @@ test("research pipeline only uses evidence rows cited by verified paper notes", 
   try {
     const firstChunkText = `ignored chunk evidence mentions a baseline dataset metric. ${"filler ".repeat(360)}`;
     await writeValidPdfProvenance(root, "paper-1", `${firstChunkText} cited chunk evidence mentions a limitation only.`);
-    const note = "# paper-1\n\n## Problem\n\nLegacy note.\n\n## Claims And Evidence\n\n- Claim: cited\n  - Page: 1\n  - Quote: cited chunk evidence\n  - Chunk: p1-c2\n";
+    const manifest = JSON.parse(await readFile(join(root, "docs/reference/pdf_manifest.json"), "utf8")) as PdfManifestRecord[];
+    const record = manifest[0]!;
+    const candidate = pipelineCandidate("paper-1", "Cited Chunk Agent Benchmark", "NeurIPS", [record.source_url ?? "https://arxiv.org/pdf/paper-1"]);
+    const note = `# Cited Chunk Agent Benchmark
+
+Evidence Status: verified
+
+evidence_status = verified
+
+## Metadata
+
+- Paper ID: paper-1
+- Title: Cited Chunk Agent Benchmark
+- Authors: A. Researcher
+- Venue: NeurIPS
+- Year: 2026
+- CCF rank: A
+- PDF: ${record.pdf_path}
+- SHA256: ${record.pdf_sha256}
+- Extraction quality: ok; 2 parsed chunk(s)
+
+## What This Paper Studies
+
+Legacy note.
+
+## Main Contribution
+
+Cites only the second chunk.
+
+## Method
+
+Verified method.
+
+## Evidence
+
+| Claim | Page | Quote | Chunk |
+| ----- | ---: | ----- | ----- |
+| cited | 1 | cited chunk evidence | p1-c2 |
+
+## Claims And Evidence
+
+- Claim: cited
+  - Page: 1
+  - Quote: cited chunk evidence
+  - Chunk: p1-c2
+  - chunk_id: p1-c2
+
+## Datasets / Benchmarks
+
+- Unknown.
+
+## Baselines
+
+- Unknown.
+
+## Metrics
+
+- Unknown.
+
+## Strengths
+
+- Verified citation.
+
+## Limitations
+
+- Cites only one chunk.
+
+## Relation to Current Idea
+
+Relevant.
+
+## Difference from Current Idea
+
+Different.
+
+## Collision Risk
+
+medium
+
+## How This Paper Affects Our Idea
+
+- Must avoid: uncited first chunk evidence.
+- Can borrow: limitation.
+- Need to beat: cited prior work.
+`;
     const chunks = await buildPdfChunkIndex(root, JSON.parse(await readFile(join(root, "docs/reference/pdf_manifest.json"), "utf8")) as PdfManifestRecord[]);
     assert.ok(chunks.some((chunk) => chunk.chunk_id === "p1-c2"), "test fixture should create a second chunk");
+    await writeArtifact(root, "docs/relative_work/candidates.json", JSON.stringify([candidate], null, 2) + "\n");
+    await writeArtifact(root, "docs/relative_work/search_report.md", "# Search Report\n\nResumed candidate.\n");
     await writeArtifact(root, "docs/reference/pdf_chunks.json", JSON.stringify(chunks, null, 2) + "\n");
     await writeArtifact(root, "docs/reference/paper_notes/README.md", "# Paper Notes\n\nResumed.\n");
     await writeArtifact(root, "docs/reference/paper_notes/paper-1.md", note);
     let state = createResearchPipelineState(idea, root);
+    state = markStage(state, "literature_search", "completed");
     state = markStage(state, "pdf_acquisition", "completed");
     state = markStage(state, "pdf_reading", "completed");
     await writeResearchPipelineState(root, state);
@@ -982,6 +1287,7 @@ test("research pipeline persists new staged PDF reader notes", async () => {
       title: "Agent Benchmark Evaluation",
       authors: ["A. Researcher"],
       year: 2026,
+      venue: "NeurIPS",
       source_urls: ["https://arxiv.org/abs/1234.56789"],
       pdf_urls: ["https://arxiv.org/pdf/1234.56789"],
       retrieval_sources: ["test"],
@@ -1079,6 +1385,12 @@ test("research pipeline persists new staged PDF reader notes", async () => {
     });
     assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /UNIQUE_AGENT_NOTE/);
     assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /evidence_status = verified/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /- Title: Agent Benchmark Evaluation/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /- PDF: docs\/reference\/pdfs\/paper-1\.pdf/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /- SHA256: [a-f0-9]{64}/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /- Extraction quality:/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /Relation to Current Idea/);
+    assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /How This Paper Affects Our Idea/);
     assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /Chunk: p1-c2/);
     assert.match(result.artifacts["docs/reference/paper_notes/paper-1.md"] ?? "", /chunk_id: p1-c2/);
   } finally {

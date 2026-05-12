@@ -35,7 +35,7 @@ import { CodexOAuthClient } from "../auth/codex-oauth.js";
 import { paperCandidateToRecord, referencesBib, type LiteratureSearchOptions, type LiteratureSearchResult, type PaperRecord } from "../literature.js";
 import { diagnoseIdea } from "../scoring.js";
 import { exists } from "../state.js";
-import { evidenceRowsCsv, evidenceRowsMarkdown, evidenceText, extractEvidenceRows, trustedEvidenceRows, type ClaimEvidenceRow } from "../skills/analysis/evidence-extract.js";
+import { evidenceRowsCsv, evidenceText, extractEvidenceRows, trustedEvidenceRows, type ClaimEvidenceRow } from "../skills/analysis/evidence-extract.js";
 import { strictScoreMarkdown, type StrictScoreInput, type StrictScoreResult } from "../skills/analysis/ccf-a-score.js";
 import { experimentPlanMarkdown, feasibilityMarkdown, revisedIdeaMarkdown } from "../skills/analysis/idea-refine.js";
 import { assessNovelty, noveltyMatrixMarkdown } from "../skills/analysis/novelty-matrix.js";
@@ -487,12 +487,14 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   }
 
   const extractedEvidenceRows = await toolRegistry.execute<{ chunks: PdfChunkIndexEntry[] }, ReturnType<typeof extractEvidenceRows>>("evidence.extract", { chunks }, toolContext);
+  const selectedCoreCandidates = coreSetCandidates(candidates, agentTriage);
+  const resumedTrustedNoteArtifacts = await readArtifacts(readArtifact, [...trustedPaperNotePaths]);
   const noteArtifacts = mandatoryPaperNoteArtifacts({
-    coreCandidates: coreSetCandidates(candidates, agentTriage),
+    coreCandidates: selectedCoreCandidates,
     manifest,
     evidenceRows: extractedEvidenceRows,
     chunks,
-    existingNoteArtifacts: { ...evidenceRowsMarkdown(extractedEvidenceRows, chunks), ...paperNoteArtifacts(agentPaperNotes, chunks) }
+    existingNoteArtifacts: { ...paperNoteArtifacts(agentPaperNotes, chunks, candidates, manifest), ...resumedTrustedNoteArtifacts }
   });
   const evidenceRows = evidenceRowsBackedByPaperNotes(extractedEvidenceRows, chunks, noteArtifacts);
   const verifiedEvidenceRows = evidenceRows.filter((row) => row.status === "verified" && row.page && row.quote && row.chunk_id);
@@ -508,6 +510,21 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   if (evidenceItems.length) {
     state = updateStageRefs(state, "pdf_reading", { evidence_refs: evidenceItems.map((item) => item.id) });
     if (options.outputRoot) await writeResearchPipelineState(outputRoot, state);
+  }
+  for (const [path, markdown] of Object.entries(noteArtifacts).filter(([path]) => /^docs\/reference\/paper_notes\/.+\.md$/.test(path))) {
+    const paperId = /^docs\/reference\/paper_notes\/(.+)\.md$/.exec(path)?.[1] ?? "paper";
+    const noteRows = paperNoteEvidenceRefs(markdown, chunks.filter((chunk) => chunk.paper_id === paperId));
+    const verified = /evidence_status\s*=\s*verified/i.test(markdown) && noteRows.length > 0;
+    await emitRuntimeEvent({
+      type: "paper.note.written",
+      run_id: runId,
+      paper_id: paperId,
+      path,
+      status: verified ? "verified" : "metadata_only",
+      evidence_rows: noteRows.length,
+      title: noteTitle(markdown),
+      timestamp: runtimeTimestamp()
+    });
   }
   for (const item of evidenceItems) {
     await emitRuntimeEvent({
@@ -1461,8 +1478,7 @@ function coreSetCandidates(candidates: PaperCandidate[], triage: CandidateTriage
     if (match) add(match);
   }
   for (const candidate of candidates.filter(isCcfACoreCandidate)) add(candidate);
-  if (selected.size) return [...selected.values()];
-  return candidates.slice(0, Math.min(8, candidates.length));
+  return [...selected.values()];
 }
 
 function mandatoryPaperNoteArtifacts(input: {
@@ -1472,7 +1488,7 @@ function mandatoryPaperNoteArtifacts(input: {
   chunks: PdfChunkIndexEntry[];
   existingNoteArtifacts: Record<string, string>;
 }): Record<string, string> {
-  const files = { ...input.existingNoteArtifacts };
+  const files: Record<string, string> = {};
   const manifestByPaper = new Map(input.manifest.map((record) => [record.paper_id, record]));
   const trustedRowsByPaper = new Map<string, ReturnType<typeof extractEvidenceRows>>();
   for (const row of trustedEvidenceRows(input.evidenceRows, input.chunks).filter((item) => item.status === "verified" && item.page && item.quote && item.chunk_id)) {
@@ -1481,11 +1497,14 @@ function mandatoryPaperNoteArtifacts(input: {
   for (const candidate of input.coreCandidates) {
     const paperId = safePaperId(candidate.candidate_id);
     const path = `docs/reference/paper_notes/${paperId}.md`;
-    const existing = files[path];
-    if (existing && paperNoteHasVerifiedEvidence(existing, paperId, input.chunks)) continue;
+    const existing = input.existingNoteArtifacts[path];
+    if (existing && paperNoteHasVerifiedEvidence(existing, paperId, input.chunks) && paperNoteHasRequiredClosureSections(existing)) {
+      files[path] = existing;
+      continue;
+    }
     const rows = trustedRowsByPaper.get(paperId) ?? [];
     files[path] = rows.length
-      ? verifiedMetadataPaperNote(candidate, rows)
+      ? verifiedMetadataPaperNote(candidate, rows, manifestByPaper.get(paperId), input.chunks.filter((chunk) => chunk.paper_id === paperId))
       : metadataOnlyPaperNote(candidate, manifestByPaper.get(paperId));
   }
   return files;
@@ -1515,11 +1534,50 @@ function paperNoteHasVerifiedEvidence(markdown: string, paperId: string, chunks:
   return paperNoteEvidenceRefs(markdown, chunks.filter((chunk) => chunk.paper_id === paperId)).length > 0;
 }
 
+const requiredPaperNoteSections = [
+  "Metadata",
+  "What This Paper Studies",
+  "Main Contribution",
+  "Method",
+  "Evidence",
+  "Datasets / Benchmarks",
+  "Baselines",
+  "Metrics",
+  "Strengths",
+  "Limitations",
+  "Relation to Current Idea",
+  "Difference from Current Idea",
+  "Collision Risk",
+  "How This Paper Affects Our Idea"
+];
+
+function paperNoteHasRequiredClosureSections(markdown: string): boolean {
+  const headings = new Set([...markdown.matchAll(/^##\s+(.+)$/gm)].map((match) => normalizeHeading(match[1] ?? "")));
+  return requiredPaperNoteSections.every((section) => headings.has(normalizeHeading(section))) && paperNoteHasConcretePdfMetadata(markdown);
+}
+
+function paperNoteHasConcretePdfMetadata(markdown: string): boolean {
+  const pdf = /^- PDF:\s*(.+)$/im.exec(markdown)?.[1]?.trim() ?? "";
+  const sha = /^- SHA256:\s*(.+)$/im.exec(markdown)?.[1]?.trim() ?? "";
+  const quality = /^- Extraction quality:\s*(.+)$/im.exec(markdown)?.[1]?.trim() ?? "";
+  return Boolean(pdf && !/^(parsed chunks|verified from parsed chunks|not downloaded|missing)$/i.test(pdf)) &&
+    /^[a-f0-9]{64}$/i.test(sha) &&
+    Boolean(quality && !/^see\b/i.test(quality) && !/^unknown$/i.test(quality));
+}
+
+function normalizeHeading(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 function paperNoteRefBacksRow(ref: { paperId: string; page: number; quote: string; chunk_id: string }, row: ClaimEvidenceRow): boolean {
   if (ref.paperId !== row.paper_id || ref.page !== Number(row.page) || ref.chunk_id !== row.chunk_id) return false;
   const noteQuote = normalizeEvidenceText(ref.quote);
   const rowQuote = normalizeEvidenceText(row.quote ?? "");
   return Boolean(noteQuote && rowQuote && (rowQuote.includes(noteQuote) || noteQuote.includes(rowQuote)));
+}
+
+function noteTitle(markdown: string): string | undefined {
+  return /^- Title:\s*(.+)$/im.exec(markdown)?.[1]?.trim();
 }
 
 function candidateMatchesTriageItem(candidate: PaperCandidate, item: string): boolean {
@@ -1529,10 +1587,11 @@ function candidateMatchesTriageItem(candidate: PaperCandidate, item: string): bo
   return Boolean(normalized && (normalized.includes(id) || normalized.includes(title) || id.includes(normalized) || title.includes(normalized)));
 }
 
-function verifiedMetadataPaperNote(candidate: PaperCandidate, rows: ReturnType<typeof extractEvidenceRows>): string {
+function verifiedMetadataPaperNote(candidate: PaperCandidate, rows: ReturnType<typeof extractEvidenceRows>, manifest: PdfManifestRecord | undefined, chunks: PdfChunkIndexEntry[]): string {
   const paperId = safePaperId(candidate.candidate_id);
   const text = evidenceText(rows);
-  return `# ${paperId}
+  const evidenceRows = rows.map((row) => `| ${escapeCell(row.claim)} | ${row.page ?? "missing"} | ${escapeCell(row.quote ?? "missing")} | ${row.chunk_id ?? "missing"} |`).join("\n");
+  return `# ${candidate.title}
 
 Evidence Status: verified
 
@@ -1540,20 +1599,35 @@ evidence_status = verified
 
 ## Metadata
 
+- Paper ID: ${paperId}
 - Title: ${candidate.title}
+- Authors: ${candidate.authors.join("; ") || "unknown"}
 - Venue: ${candidate.venue ?? "unknown"}
 - Year: ${candidate.year ?? "unknown"}
 - CCF rank: ${candidate.ccf_rank ?? "unknown"}
 - Track status: ${candidate.track_status ?? "unknown"}
+- PDF: ${manifest?.pdf_path ?? "verified from parsed chunks"}
+- SHA256: ${manifest?.pdf_sha256 ?? "missing"}
+- Extraction quality: ${paperExtractionQuality(manifest, chunks)}
 - Source provenance: ${(candidate.source_provenance ?? candidate.retrieval_sources).join("; ") || "unknown"}
 
-## Problem
+## What This Paper Studies
 
 ${extractEvidenceSection(text, "problem")}
+
+## Main Contribution
+
+${extractEvidenceSection(text, "method")}
 
 ## Method
 
 ${extractEvidenceSection(text, "method")}
+
+## Evidence
+
+| Claim | Page | Quote | Chunk |
+| ----- | ---: | ----- | ----- |
+${evidenceRows || "| No verified claim extracted. | missing | missing | missing |"}
 
 ## Claims And Evidence
 
@@ -1565,22 +1639,73 @@ ${rows.map((row) => `- Claim: ${row.claim}
   - Chunk: ${row.chunk_id ?? "missing"}
   - chunk_id: ${row.chunk_id ?? "missing"}`).join("\n")}
 
+## Datasets / Benchmarks
+
+${markdownList(signalList(rows, ["dataset", "benchmark"]))}
+
+## Baselines
+
+${markdownList(signalList(rows, ["baseline"]))}
+
+## Metrics
+
+${markdownList(signalList(rows, ["metric", "accuracy", "latency", "throughput"]))}
+
+## Strengths
+
+- Provides verified PDF-backed evidence rows for the current idea.
+
 ## Limitations
 
 ${extractEvidenceSection(text, "limitation")}
+
+## Relation to Current Idea
+
+This paper is in the selected core set for the current idea and has verified page-level evidence.
+
+## Difference from Current Idea
+
+The exact difference must be narrowed in \`docs/relative_work/idea_vs_prior_work.md\`.
+
+## Collision Risk
+
+${candidate.novelty_risk && candidate.novelty_risk !== "unknown" ? candidate.novelty_risk : "Medium"}
+
+## How This Paper Affects Our Idea
+
+- Must avoid: unsupported claims that overlap this paper without page-level contrast.
+- Can borrow: reviewer-facing baselines, datasets, metrics, and limitations found in the evidence rows.
+- Need to beat: the most relevant method or evaluation signal cited above.
 `;
+}
+
+function paperExtractionQuality(manifest: PdfManifestRecord | undefined, chunks: PdfChunkIndexEntry[]): string {
+  if (manifest?.extraction_quality) {
+    const quality = manifest.extraction_quality;
+    const weakPages = quality.weak_pages?.length ? `; weak pages ${quality.weak_pages.join(", ")}` : "";
+    return `${quality.quality}; mean chars/page ${Math.round(quality.mean_chars_per_page)}${weakPages}`;
+  }
+  const qualities = chunks.map((chunk) => chunk.extraction_quality).filter(Boolean) as Array<NonNullable<PdfChunkIndexEntry["extraction_quality"]>>;
+  if (!qualities.length) return chunks.length ? `${chunks.length} parsed chunk(s); page quality unavailable` : "not parsed";
+  const counts = new Map<NonNullable<PdfChunkIndexEntry["extraction_quality"]>, number>();
+  for (const quality of qualities) counts.set(quality, (counts.get(quality) ?? 0) + 1);
+  const dominant = [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? "weak";
+  return `${dominant}; ${chunks.length} parsed chunk(s)`;
 }
 
 function metadataOnlyPaperNote(candidate: PaperCandidate, manifest: PdfManifestRecord | undefined): string {
   const paperId = safePaperId(candidate.candidate_id);
-  return `# ${paperId}
+  return `# ${candidate.title}
 
 Evidence Status: unverified
 
 evidence_status = unverified
 
+Status: Metadata-only, not valid for strict CCF-A evidence.
+
 ## Metadata
 
+- Paper ID: ${paperId}
 - Title: ${candidate.title}
 - Authors: ${candidate.authors.join("; ") || "unknown"}
 - Venue: ${candidate.venue ?? "unknown"}
@@ -1591,6 +1716,27 @@ evidence_status = unverified
 - Source provenance: ${(candidate.source_provenance ?? candidate.retrieval_sources).join("; ") || "unknown"}
 - Source URL: ${candidate.source_urls[0] ?? "missing"}
 - PDF status: ${manifest?.status ?? candidate.pdf_status ?? "not_available"}
+- PDF: ${manifest?.pdf_path ?? "not downloaded"}
+- SHA256: ${manifest?.pdf_sha256 ?? "missing"}
+- Extraction quality: ${manifest?.extraction_quality?.quality ?? "not parsed"}
+
+## What This Paper Studies
+
+Metadata indicates this paper may be relevant to the idea, but no verified PDF evidence is available.
+
+## Main Contribution
+
+Blocked until a PDF-backed note is available.
+
+## Method
+
+Blocked until a PDF-backed note is available.
+
+## Evidence
+
+| Claim | Page | Quote | Chunk |
+| ----- | ---: | ----- | ----- |
+| Metadata-only note. Not valid for strict CCF-A evidence. | missing | missing | missing |
 
 ## Claims And Evidence
 
@@ -1599,10 +1745,56 @@ evidence_status = unverified
   - Quote: missing
   - chunk_id: missing
 
+## Datasets / Benchmarks
+
+- Unknown until PDF reading.
+
+## Baselines
+
+- Unknown until PDF reading.
+
+## Metrics
+
+- Unknown until PDF reading.
+
+## Strengths
+
+- Retains provenance that this candidate belongs in the core set.
+
+## Limitations
+
+- No page, quote, or chunk evidence is available.
+
+## Relation to Current Idea
+
+Potentially relevant core-set candidate.
+
+## Difference from Current Idea
+
+Unknown until PDF-backed evidence is extracted.
+
+## Collision Risk
+
+${candidate.novelty_risk && candidate.novelty_risk !== "unknown" ? candidate.novelty_risk : "Unknown"}
+
+## How This Paper Affects Our Idea
+
+- Must avoid: counting this note as strict evidence.
+- Can borrow: nothing until PDF-backed evidence is available.
+- Need to beat: unknown until the paper is read.
+
 ## Evidence Policy
 
 Do not count this metadata-only note as verified evidence for related work, novelty, or scoring.
 `;
+}
+
+function signalList(rows: ReturnType<typeof extractEvidenceRows>, terms: string[]): string[] {
+  const loweredTerms = terms.map((term) => term.toLowerCase());
+  const signals = rows
+    .filter((row) => loweredTerms.some((term) => `${row.claim_type} ${row.claim} ${row.quote ?? ""}`.toLowerCase().includes(term)))
+    .map((row) => row.claim);
+  return [...new Set(signals)];
 }
 
 function extractEvidenceSection(text: string, kind: "problem" | "method" | "limitation"): string {
@@ -1652,13 +1844,19 @@ async function paperNotesFromArtifacts(readArtifact: (relativePath: string) => P
   return notes;
 }
 
-function paperNoteArtifacts(notes: PdfPaperNote[], chunks: PdfChunkIndexEntry[]): Record<string, string> {
+function paperNoteArtifacts(notes: PdfPaperNote[], chunks: PdfChunkIndexEntry[], candidates: PaperCandidate[], manifest: PdfManifestRecord[]): Record<string, string> {
   const chunksByPaper = new Map<string, PdfChunkIndexEntry[]>();
   for (const chunk of chunks) chunksByPaper.set(chunk.paper_id, [...(chunksByPaper.get(chunk.paper_id) ?? []), chunk]);
-  return Object.fromEntries(notes.map((note) => [`docs/reference/paper_notes/${note.paper_id}.md`, paperNoteMarkdown(note, chunksByPaper.get(note.paper_id) ?? [])]));
+  const candidatesByPaper = new Map(candidates.map((candidate) => [safePaperId(candidate.candidate_id), candidate]));
+  const manifestByPaper = new Map(manifest.map((record) => [record.paper_id, record]));
+  return Object.fromEntries(notes.map((note) => {
+    const paperId = safePaperId(note.paper_id);
+    const paperChunks = chunksByPaper.get(paperId) ?? [];
+    return [`docs/reference/paper_notes/${paperId}.md`, paperNoteMarkdown(note, paperChunks, candidatesByPaper.get(paperId), manifestByPaper.get(paperId))];
+  }));
 }
 
-function paperNoteMarkdown(note: PdfPaperNote, chunks: PdfChunkIndexEntry[]): string {
+function paperNoteMarkdown(note: PdfPaperNote, chunks: PdfChunkIndexEntry[], candidate: PaperCandidate | undefined, manifest: PdfManifestRecord | undefined): string {
   const evidence = note.main_claims.flatMap((claim) => {
     const chunk = evidenceChunkForClaim(claim, chunks);
     if (!chunk) return [];
@@ -1669,15 +1867,38 @@ function paperNoteMarkdown(note: PdfPaperNote, chunks: PdfChunkIndexEntry[]): st
   - chunk_id: ${chunk.chunk_id}
   - Confidence: ${claim.confidence}`;
   });
-  return `# ${note.paper_id}
+  const evidenceRows = note.main_claims.flatMap((claim) => {
+    const chunk = evidenceChunkForClaim(claim, chunks);
+    return chunk ? [`| ${escapeCell(claim.claim)} | ${claim.page} | ${escapeCell(claim.evidence_quote)} | ${chunk.chunk_id} |`] : [];
+  });
+  const paperId = safePaperId(note.paper_id);
+  return `# ${candidate?.title ?? note.paper_id}
 
 Evidence Status: ${evidence.length ? "verified" : "unverified"}
 
 evidence_status = ${evidence.length ? "verified" : "unverified"}
 
-## Problem
+## Metadata
+
+- Paper ID: ${paperId}
+- Title: ${candidate?.title ?? note.paper_id}
+- Authors: ${candidate?.authors.join("; ") || "unknown"}
+- Venue: ${candidate?.venue ?? "unknown"}
+- Year: ${candidate?.year ?? "unknown"}
+- CCF rank: ${candidate?.ccf_rank ?? "unknown"}
+- Track status: ${candidate?.track_status ?? "unknown"}
+- PDF: ${manifest?.pdf_path ?? "missing"}
+- SHA256: ${manifest?.pdf_sha256 ?? "missing"}
+- Extraction quality: ${paperExtractionQuality(manifest, chunks)}
+- Source provenance: ${(candidate?.source_provenance ?? candidate?.retrieval_sources ?? []).join("; ") || "unknown"}
+
+## What This Paper Studies
 
 ${note.main_problem}
+
+## Main Contribution
+
+${note.summary}
 
 ## Method
 
@@ -1687,11 +1908,17 @@ ${note.core_method}
 
 ${note.summary}
 
+## Evidence
+
+| Claim | Page | Quote | Chunk |
+| ----- | ---: | ----- | ----- |
+${evidenceRows.join("\n") || "| No verified claim extracted. | missing | missing | missing |"}
+
 ## Claims And Evidence
 
 ${evidence.join("\n") || "- No verified claims extracted."}
 
-## Datasets
+## Datasets / Benchmarks
 
 ${markdownList(note.datasets)}
 
@@ -1707,13 +1934,27 @@ ${markdownList(note.metrics)}
 
 ${markdownList(note.limitations)}
 
-## Relevance
+## Strengths
+
+${markdownList(note.strengths)}
+
+## Relation to Current Idea
 
 ${note.relevance_to_current_idea}
 
-## Difference
+## Difference from Current Idea
 
 ${note.difference_from_current_idea}
+
+## Collision Risk
+
+${note.collision_risk}
+
+## How This Paper Affects Our Idea
+
+- Must avoid: overstating novelty where this paper overlaps the current idea.
+- Can borrow: ${note.useful_for.join("; ") || "verified definitions, baselines, or evaluation conventions"}.
+- Need to beat: evidence-backed method, dataset, baseline, or metric signals above.
 `;
 }
 

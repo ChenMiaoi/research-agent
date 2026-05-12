@@ -2793,6 +2793,13 @@ function runtimeActivityForEvent(event: Idea2RepoEvent): TuiActivity | null {
         stage: "analysis",
         tone: "success"
       };
+    case "paper.note.written":
+      return {
+        title: "Paper note written",
+        detail: compactText(`${event.paper_id} ${event.status} -> ${event.path}`, 90),
+        stage: "analysis",
+        tone: event.status === "verified" ? "success" : "warning"
+      };
     case "question.asked":
       return {
         title: "Clarification question",
@@ -2861,6 +2868,7 @@ function runtimeActivityForEvent(event: Idea2RepoEvent): TuiActivity | null {
     case "artifact.restored":
       return null;
   }
+  return null;
 }
 
 function workflowStepForRuntimeStage(stageId?: string): WorkflowStepId {

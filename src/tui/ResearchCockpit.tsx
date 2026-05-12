@@ -378,6 +378,9 @@ function researchThreadEntries(events: Idea2RepoEvent[]): ResearchThreadEntry[] 
       case "evidence.extracted":
         entries.push({ kind: "Evidence", text: `${event.paper_id} p.${event.page}: ${event.claim}`, color: colors.success });
         break;
+      case "paper.note.written":
+        entries.push({ kind: "Note", text: `${event.paper_id} ${event.status} (${event.evidence_rows} evidence rows)`, color: event.status === "verified" ? colors.success : colors.warning });
+        break;
       case "question.asked":
         entries.push({ kind: "Question", text: `${event.question} Why: ${event.why_it_matters}`, color: colors.warning });
         break;
