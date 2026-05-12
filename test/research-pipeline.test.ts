@@ -33,9 +33,13 @@ test("offline research pipeline returns resumable stage state and core artifacts
   assert.equal(result.searchPlan.recall_queries.length >= 5, true);
   assert.equal(validateWithSchema<ResearchPipelineSchemaResult>(ResearchPipelineResultSchema, result, "ResearchPipelineResult"), result);
   assert.ok(result.artifacts["docs/relative_work/search_plan.json"]);
+  assert.match(result.artifacts["docs/relative_work/search_plan.md"] ?? "", /Literature Search Plan/);
+  assert.match(result.artifacts["docs/relative_work/candidates.md"] ?? "", /Literature Candidates/);
   assert.match(result.artifacts["docs/idea/raw_idea.md"] ?? "", /LLM agent benchmark/);
+  assert.match(result.artifacts["docs/idea/idea_brief.md"] ?? "", /Interpreted Research Direction/);
   assert.match(result.artifacts["docs/idea/optimized_research_direction.md"] ?? "", /Optimized Research Direction/);
   assert.match(result.artifacts["reports/ccf_a_readiness_report.md"] ?? "", /CCF-A Readiness Report/);
+  assert.equal(result.artifacts["reports/final_ccf_a_report.md"], result.artifacts["reports/ccf_a_readiness_report.md"]);
   assert.match(result.artifacts["reports/novelty_matrix.md"] ?? "", /Novelty Gap Matrix/);
   assert.match(result.artifacts["reports/related_work.md"] ?? "", /Related Work Report/);
   assert.match(result.artifacts["reports/evidence_ledger.md"] ?? "", /Evidence Ledger/);

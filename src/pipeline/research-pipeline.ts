@@ -191,6 +191,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     if (!snapshot || (snapshot.status !== "completed" && snapshot.status !== "skipped")) return false;
     const artifactPaths = stageArtifactPaths(id, extraArtifacts).filter(Boolean);
     for (const relativePath of artifactPaths) {
+      if (await legacyResumeArtifactExists(outputRoot, id, relativePath)) continue;
       if (!(await exists(join(outputRoot, relativePath)))) return false;
     }
     await Promise.all(artifactPaths.map((relativePath) => readArtifact(relativePath)));
@@ -302,7 +303,10 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
   };
   let ideaBrief = deterministicIdeaBrief;
   if (await canResumeStage("idea_intake")) {
-    ideaBrief = parseIdeaBriefArtifact((await readArtifact("docs/idea/idea_brief.md")) ?? "") ?? deterministicIdeaBrief;
+    ideaBrief =
+      (await readJsonArtifact<IdeaBrief>(readArtifact, "docs/idea/idea_brief.json")) ??
+      parseIdeaBriefArtifact((await readArtifact("docs/idea/idea_brief.md")) ?? "") ??
+      deterministicIdeaBrief;
   } else {
     await setStage("idea_intake", "running");
     ideaBrief = await stagedOrFallback(
@@ -1022,6 +1026,7 @@ function pipelineArtifacts(input: {
   const executionPlan = canonicalExecutionPlanMarkdown(input);
   return {
     "reports/ccf_a_readiness_report.md": readinessReport,
+    "reports/final_ccf_a_report.md": readinessReport,
     "reports/novelty_matrix.md": noveltyReport,
     "reports/related_work.md": canonicalRelatedWorkReportMarkdown(input, relatedWorkReport),
     "reports/evidence_ledger.md": canonicalEvidenceLedgerMarkdown(input),
@@ -1032,11 +1037,14 @@ function pipelineArtifacts(input: {
     "paper/related_work.md": paperRelatedWorkMarkdown(input, relatedWorkReport),
     "papers/papers.bib": referencesBib(verifiedPapers),
     "docs/idea/raw_idea.md": `# Raw Idea\n\n${input.idea.trim() || "No raw idea was provided."}\n`,
-    "docs/idea/idea_brief.md": `# Idea Brief\n\n${JSON.stringify(input.ideaBrief, null, 2)}\n`,
+    "docs/idea/idea_brief.md": ideaBriefMarkdown(input.idea, input.ideaBrief),
+    "docs/idea/idea_brief.json": JSON.stringify(input.ideaBrief, null, 2) + "\n",
     "docs/idea/optimized_research_direction.md": pipelineOptimizedDirectionMarkdown(input.ideaBrief, input.agentStrategy),
     "docs/idea/assumptions.md": `# Assumptions\n\n${input.ideaBrief.assumptions.map((item) => `- ${item}`).join("\n")}\n`,
+    "docs/relative_work/search_plan.md": searchPlanMarkdown(input.searchPlan),
     "docs/relative_work/search_plan.json": JSON.stringify(input.searchPlan, null, 2) + "\n",
     "docs/relative_work/search_report.md": input.searchReport,
+    "docs/relative_work/candidates.md": candidatesMarkdown(input.candidates, input.ccfVenueGate),
     "docs/relative_work/candidates.json": JSON.stringify(input.candidates, null, 2) + "\n",
     "docs/relative_work/triage_report.md": triageReport(evidenceBackedCandidates),
     "docs/reference/pdf_manifest.json": JSON.stringify(input.manifest, null, 2) + "\n",
@@ -1067,6 +1075,110 @@ function pipelineArtifacts(input: {
 }
 
 type PipelineArtifactInput = Parameters<typeof pipelineArtifacts>[0];
+
+function ideaBriefMarkdown(idea: string, brief: IdeaBrief): string {
+  return `# Idea Brief
+
+## Raw Idea
+
+${idea.trim() || "No raw idea was provided."}
+
+## Interpreted Research Direction
+
+${brief.idea_summary}
+
+## Problem
+
+${brief.problem}
+
+## Initial Target Venues
+
+${markdownList(brief.target_venues)}
+
+## Initial CCF-A Risk
+
+- Novelty risk: provisional until verified related-work notes exist.
+- Evidence risk: ${brief.missing_information.length ? "missing information remains" : "evidence must still be verified through literature and PDFs"}.
+- Feasibility risk: ${brief.resource_constraints.join("; ") || "resource constraints not specified"}.
+
+## Missing Information
+
+${numberedMarkdown(brief.missing_information.length ? brief.missing_information : ["No blocking missing information was identified during intake."])}
+
+## Search Seeds
+
+${markdownList(brief.search_seed_terms)}
+`;
+}
+
+export function searchPlanMarkdown(plan: SearchPlan): string {
+  return `# Literature Search Plan
+
+## Core Concepts
+
+${markdownList(plan.core_concepts)}
+
+## Precision Queries
+
+${queryTable(plan.precision_queries)}
+
+## Recall Queries
+
+${queryTable(plan.recall_queries)}
+
+## Baseline / Dataset / Metric Queries
+
+${queryTable([...plan.baseline_queries, ...plan.dataset_metric_queries])}
+
+## Collision Queries
+
+${queryTable(plan.collision_queries)}
+
+## Venue Queries
+
+${queryTable(plan.venue_queries)}
+
+## Stop Condition
+
+${plan.stop_condition}
+`;
+}
+
+export function candidatesMarkdown(candidates: PaperCandidate[], gate: LiteratureSearchResult["ccf_gate"]): string {
+  const rows = candidates.map((candidate) => {
+    const paperId = safePaperId(candidate.candidate_id);
+    return `| ${escapeCell(paperId)} | ${escapeCell(candidate.title)} | ${candidate.year ?? ""} | ${escapeCell(candidate.venue ?? "unknown")} | ${candidate.ccf_rank ?? "unknown"} | ${candidate.track_status ?? "unknown"} | ${candidate.pdf_status ?? (candidate.pdf_urls.length ? "available" : "unavailable")} |`;
+  });
+  return `# Literature Candidates
+
+## Gate Summary
+
+- Retrieved candidates: ${candidates.length}
+- Qualified CCF-A main/full core papers: ${gate.eligible_core_count} / ${gate.required_core_count}
+- Score mode: ${gate.preliminary_only ? "preliminary only" : "eligible for verified strict scoring"}
+
+## Candidate Table
+
+| Paper ID | Title | Year | Venue | CCF Rank | Track | PDF |
+| --- | --- | ---: | --- | --- | --- | --- |
+${rows.join("\n") || "| none | No candidates found. |  |  |  |  |  |"}
+
+## Machine Data
+
+Structured candidate metadata remains available in \`docs/relative_work/candidates.json\`.
+`;
+}
+
+function queryTable(queries: SearchPlan["precision_queries"]): string {
+  if (!queries.length) return "| Query | Source | Purpose |\n| --- | --- | --- |\n| none | none | No query planned. |";
+  return `| Query | Source | Purpose |
+| --- | --- | --- |
+${queries.map((entry) => `| ${escapeCell(entry.query)} | ${escapeCell(entry.source_hints.join("; ") || "any")} | ${escapeCell(entry.purpose)} |`).join("\n")}`;
+}
+
+function escapeCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+}
 
 function canonicalReadinessReportMarkdown(input: PipelineArtifactInput): string {
   return `# CCF-A Readiness Report
@@ -1297,6 +1409,17 @@ function fillQueryGate<T extends { query: string }>(queries: T[], fallback: T[])
 function stageArtifactPaths(id: Parameters<typeof markStage>[1], extraArtifacts: string[] = []): string[] {
   const stage = researchStages.find((candidate) => candidate.id === id);
   return [...new Set([...(stage?.artifactPaths ?? []), ...extraArtifacts])];
+}
+
+async function legacyResumeArtifactExists(outputRoot: string, id: Parameters<typeof markStage>[1], relativePath: string): Promise<boolean> {
+  const legacyPath = (() => {
+    if (id === "idea_intake" && relativePath === "docs/idea/idea_brief.json") return "docs/idea/idea_brief.md";
+    if (id === "search_planning" && relativePath === "docs/relative_work/search_plan.md") return "docs/relative_work/search_plan.json";
+    if (id === "literature_search" && relativePath === "docs/relative_work/candidates.md") return "docs/relative_work/candidates.json";
+    if (id === "artifact_writing" && relativePath === "reports/final_ccf_a_report.md") return "reports/ccf_a_readiness_report.md";
+    return null;
+  })();
+  return Boolean(legacyPath && (await exists(join(outputRoot, legacyPath))));
 }
 
 function decisionEvidenceRef(ref: { artifact: string; page?: number; quote?: string; chunk_id?: string }): string {

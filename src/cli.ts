@@ -16,7 +16,7 @@ import { AuthStorage, openaiCodexOAuthProvider } from "./auth/codex-oauth.js";
 import { runTui } from "./tui/App.js";
 import { loadCodexModelCatalog } from "./models.js";
 import { proxyEnvForChild } from "./proxy.js";
-import { runResearchPipeline } from "./pipeline/research-pipeline.js";
+import { candidatesMarkdown, runResearchPipeline, searchPlanMarkdown } from "./pipeline/research-pipeline.js";
 import { formatDecisions, readDecisionRecords } from "./runtime/decisions.js";
 import { JsonlEventSink, readJsonlEvents } from "./runtime/events.js";
 import { formatPlan, readPlanState } from "./runtime/plan.js";
@@ -476,9 +476,10 @@ async function commandLiterature(argv: string[]): Promise<number> {
       provider: "offline",
       strictCcfA: hasFlag(parsed, "strict-ccf-a")
     });
+    await writeText(ensureChild(root, "docs/relative_work/search_plan.md"), searchPlanMarkdown(pipeline.searchPlan));
     await writeText(ensureChild(root, "docs/relative_work/search_plan.json"), JSON.stringify(pipeline.searchPlan, null, 2) + "\n");
     await writeText(ensureChild(root, "docs/idea/idea_brief.md"), pipeline.artifacts["docs/idea/idea_brief.md"] ?? `# Idea Brief\n\n${idea}\n`);
-    console.log(`Literature search plan written: ${ensureChild(root, "docs/relative_work/search_plan.json")}`);
+    console.log(`Literature search plan written: ${ensureChild(root, "docs/relative_work/search_plan.md")}`);
     console.log(`Precision queries: ${pipeline.searchPlan.precision_queries.length}`);
     console.log(`Recall queries: ${pipeline.searchPlan.recall_queries.length}`);
     return 0;
@@ -491,6 +492,7 @@ async function commandLiterature(argv: string[]): Promise<number> {
       limit: numberFlag(parsed, "max-papers", numberFlag(parsed, "limit", 20)),
       sources: normalizeSources(valuesFlag(parsed, "source") as LiteratureSource[])
     });
+    await writeText(ensureChild(root, "docs/relative_work/candidates.md"), candidatesMarkdown(result.candidates, result.ccf_gate));
     await writeText(ensureChild(root, "docs/relative_work/candidates.json"), JSON.stringify(result.candidates, null, 2) + "\n");
     await writeText(ensureChild(root, "docs/relative_work/search_report.md"), result.search_report);
     console.log(`Literature candidates written: ${ensureChild(root, "docs/relative_work/candidates.json")}`);

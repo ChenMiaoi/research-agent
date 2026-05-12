@@ -36,7 +36,7 @@ export const researchStages: ResearchStageDefinition[] = [
     label: "Idea intake",
     prompt: "00_intake_router.md",
     deterministic: false,
-    artifactPaths: ["docs/idea/raw_idea.md", "docs/idea/idea_brief.md", "docs/idea/optimized_research_direction.md", "docs/idea/assumptions.md"]
+    artifactPaths: ["docs/idea/raw_idea.md", "docs/idea/idea_brief.md", "docs/idea/idea_brief.json", "docs/idea/optimized_research_direction.md", "docs/idea/assumptions.md"]
   },
   {
     id: "search_planning",
@@ -44,14 +44,14 @@ export const researchStages: ResearchStageDefinition[] = [
     label: "Search planning",
     prompt: "01_search_planner.md",
     deterministic: false,
-    artifactPaths: ["docs/relative_work/search_plan.json"]
+    artifactPaths: ["docs/relative_work/search_plan.md", "docs/relative_work/search_plan.json"]
   },
   {
     id: "literature_search",
     index: 2,
     label: "Literature search",
     deterministic: true,
-    artifactPaths: ["docs/relative_work/candidates.json", "docs/relative_work/search_report.md"]
+    artifactPaths: ["docs/relative_work/candidates.md", "docs/relative_work/candidates.json", "docs/relative_work/search_report.md"]
   },
   {
     id: "candidate_triage",
@@ -142,6 +142,7 @@ export const researchStages: ResearchStageDefinition[] = [
     deterministic: false,
     artifactPaths: [
       "reports/ccf_a_readiness_report.md",
+      "reports/final_ccf_a_report.md",
       "reports/novelty_matrix.md",
       "reports/related_work.md",
       "reports/evidence_ledger.md",
