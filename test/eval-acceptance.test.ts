@@ -75,6 +75,7 @@ test("eval: known idea with known papers yields evidence-backed matrices", () =>
     hasScientificHypothesis: true
   });
   assert.ok(score.score_dimensions.every((dimension) => dimension.positiveEvidence.every((ref) => /^eval-e\d+$/.test(ref))));
+  assert.equal(score.score_type, "Evidence-backed");
   assert.equal(score.hard_blockers.includes("No baseline/dataset/metric"), false);
 });
 
@@ -236,6 +237,8 @@ test("eval: scoring is deterministic and improves when evidence gates are resolv
   });
   const blocked = strictCcfAScore(blockedInput);
   assert.ok(improved.total > blocked.total);
+  assert.equal(blocked.score_type, "Preliminary");
+  assert.equal(improved.score_type, "Submission-ready");
   assert.equal(improved.hard_blockers.length, 0);
   assert.equal(improved.score_dimensions.reduce((sum, dimension) => sum + dimension.maxScore, 0), 100);
 });

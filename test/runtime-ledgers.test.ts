@@ -170,6 +170,7 @@ test("score snapshot ledger appends strict CCF-A score snapshots", async () => {
     assert.equal(snapshots.length, 1);
     assert.equal(snapshots[0]?.score, 39);
     assert.equal(snapshots[0]?.max_score, 100);
+    assert.equal(snapshots[0]?.score_type, "Preliminary");
     assert.ok(snapshots[0]?.hard_blockers.includes("No PDF read"));
     assert.equal(snapshots[0]?.dimensions.length, 8);
     assert.ok(snapshots[0]?.soft_weaknesses.length);

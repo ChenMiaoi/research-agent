@@ -664,6 +664,7 @@ export async function runResearchPipeline(idea: string, options: ResearchPipelin
     verifiedRelatedWorkCount: verifiedPaperCount,
     pdfReadCount: new Set(chunks.map((chunk) => chunk.paper_id)).size,
     corePaperCount: verifiedCcfACorePaperCount,
+    ccfAGateBlocked: ccfVenueGate.preliminary_only,
     evidenceRefs: evidenceItems.map((item) => item.id),
     hasStrongBaseline: survey.reviewerExpectedBaselines.length > 0,
     hasDatasetOrBenchmark: survey.reviewerExpectedDatasets.length > 0,

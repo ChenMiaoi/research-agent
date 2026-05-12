@@ -2,6 +2,7 @@ export type StrictScoreInput = {
   verifiedRelatedWorkCount?: number;
   pdfReadCount?: number;
   corePaperCount?: number;
+  ccfAGateBlocked?: boolean;
   evidenceRefs?: string[];
   hasStrongBaseline?: boolean;
   hasDatasetOrBenchmark?: boolean;
@@ -19,6 +20,8 @@ export type StrictScoreInput = {
   hasStrongMlBaselines?: boolean;
 };
 
+export type StrictScoreType = "Preliminary" | "Evidence-backed" | "Submission-ready";
+
 export type ScoreDimension = {
   name: string;
   score: number;
@@ -34,12 +37,14 @@ export type ScoreDimension = {
 export type StrictScoreResult = {
   total: number;
   uncapped_total: number;
+  score_type: StrictScoreType;
   dimensions: Record<string, number>;
   score_dimensions: ScoreDimension[];
   confidence: number;
   caps: Array<{ reason: string; cap: number }>;
   hard_blockers: string[];
   soft_weaknesses: string[];
+  why_not_ccf_a: string[];
   path_to_70: string[];
   path_to_80: string[];
 };
@@ -60,6 +65,7 @@ export function strictCcfAScore(input: StrictScoreInput): StrictScoreResult {
   const dimensions = Object.fromEntries(scoreDimensions.map((dimension, index) => [RUBRIC[index]!.key, dimension.score]));
   const caps: StrictScoreResult["caps"] = [];
   addCap(caps, !input.verifiedRelatedWorkCount, "No verified related work", 45);
+  addCap(caps, Boolean(input.ccfAGateBlocked), "CCF-A venue gate blocked", 55);
   addCap(caps, (input.corePaperCount ?? 0) <= 0, "No CCF-A core papers", 55);
   addCap(caps, !input.hasStrongBaseline || !input.hasDatasetOrBenchmark || !input.hasMetric, "No baseline/dataset/metric", 60);
   addCap(caps, Boolean(input.pureEngineeringIntegration && !input.hasScientificHypothesis), "Engineering artifact without research question", 50);
@@ -72,38 +78,50 @@ export function strictCcfAScore(input: StrictScoreInput): StrictScoreResult {
   addCap(caps, Boolean(input.venueExpectsStrongMlBaselines && !input.hasStrongMlBaselines), "Target venue expects strong ML baselines but none defined", 65);
   const uncapped = scoreDimensions.reduce((sum, dimension) => sum + dimension.score, 0);
   const cap = caps.length ? Math.min(...caps.map((item) => item.cap)) : 100;
+  const total = Math.min(uncapped, cap);
+  const scoreType = strictScoreType(input, caps, total);
   const hardBlockers = caps.map((item) => item.reason);
   const softWeaknesses = scoreDimensions
     .filter((dimension) => dimension.score / dimension.maxScore < 0.7)
     .flatMap((dimension) => dimension.missingEvidence)
     .filter((item) => !hardBlockers.includes(item));
   return {
-    total: Math.min(uncapped, cap),
+    total,
     uncapped_total: uncapped,
+    score_type: scoreType,
     dimensions,
     score_dimensions: scoreDimensions,
     confidence: scoreConfidence(input, scoreDimensions),
     caps,
     hard_blockers: hardBlockers,
     soft_weaknesses: [...new Set(softWeaknesses)],
+    why_not_ccf_a: whyNotCcfA(scoreType, caps, scoreDimensions),
     path_to_70: targetScorePath(70, caps, scoreDimensions),
     path_to_80: targetScorePath(80, caps, scoreDimensions)
   };
 }
 
 export function strictScoreMarkdown(result: StrictScoreResult): string {
+  const activeCap = result.caps.length ? Math.min(...result.caps.map((cap) => cap.cap)) : "none";
   return `# CCF-A Strict Scorecard
 
-- Overall CCF-A readiness: ${result.total} / 100
+- Final score: ${result.total} / 100
 - Uncapped score: ${result.uncapped_total} / 100
+- Score type: ${result.score_type}
 - Confidence: ${result.confidence}
-- Active cap: ${result.caps.length ? Math.min(...result.caps.map((cap) => cap.cap)) : "none"}
+- Active cap: ${activeCap}
+
+## Active Caps
+
+| Reason | Cap |
+| --- | ---: |
+${result.caps.map((cap) => `| ${escapeCell(cap.reason)} | ${cap.cap} |`).join("\n") || "| none | none |"}
 
 ## Strict Rubric
 
-| Dimension | Score | Confidence | Rationale |
-| --- | ---: | ---: | --- |
-${result.score_dimensions.map((dimension) => `| ${dimension.name} | ${dimension.score}/${dimension.maxScore} | ${dimension.confidence} | ${escapeCell(dimension.rationale)} |`).join("\n")}
+| Dimension | Score | Confidence | Evidence | Missing | Rationale |
+| --- | ---: | ---: | --- | --- | --- |
+${result.score_dimensions.map((dimension) => `| ${dimension.name} | ${dimension.score}/${dimension.maxScore} | ${dimension.confidence} | ${escapeCell(dimensionEvidenceSummary(dimension))} | ${escapeCell(dimension.missingEvidence.join("; ") || "none")} | ${escapeCell(dimension.rationale)} |`).join("\n")}
 
 ## Hard Blockers
 
@@ -122,11 +140,15 @@ ${result.score_dimensions.map((dimension) => `### ${dimension.name}
 - Missing evidence: ${dimension.missingEvidence.join("; ") || "none"}
 - Recommended actions: ${dimension.recommendedActions.join("; ") || "none"}`).join("\n\n")}
 
-## Possible Path To 70+
+## Why not CCF-A
+
+${result.why_not_ccf_a.map((reason, index) => `${index + 1}. ${reason}`).join("\n") || "- Current deterministic evidence gates do not identify a blocking CCF-A reason."}
+
+## Path to 70
 
 ${result.path_to_70.map((action, index) => `${index + 1}. ${action}`).join("\n") || "- Already at or above 70 under current caps."}
 
-## Possible Path To 80+
+## Path to 80
 
 ${result.path_to_80.map((action, index) => `${index + 1}. ${action}`).join("\n") || "- Already at or above 80 under current caps."}
 
@@ -134,6 +156,24 @@ ${result.path_to_80.map((action, index) => `${index + 1}. ${action}`).join("\n")
 
 ${result.caps.map((cap) => `- ${cap.reason}: total cap ${cap.cap}`).join("\n") || "- none"}
 `;
+}
+
+function strictScoreType(input: StrictScoreInput, caps: StrictScoreResult["caps"], total: number): StrictScoreType {
+  const noVerifiedPdfNotes = !input.verifiedRelatedWorkCount || !input.pdfReadCount;
+  const ccfGateBlocked = Boolean(input.ccfAGateBlocked || (input.corePaperCount ?? 0) <= 0);
+  if (noVerifiedPdfNotes || ccfGateBlocked) return "Preliminary";
+  const enoughEvidenceForSubmission = (input.verifiedRelatedWorkCount ?? 0) >= 5 && (input.pdfReadCount ?? 0) >= 5 && (input.corePaperCount ?? 0) >= 5;
+  if (!caps.length && total >= 70 && enoughEvidenceForSubmission) return "Submission-ready";
+  return "Evidence-backed";
+}
+
+function whyNotCcfA(scoreType: StrictScoreType, caps: StrictScoreResult["caps"], dimensions: ScoreDimension[]): string[] {
+  const capReasons = caps.map((cap) => `${cap.reason} caps the score at ${cap.cap}.`);
+  const missing = dimensions
+    .flatMap((dimension) => dimension.missingEvidence.map((item) => `${dimension.name}: ${item}.`))
+    .slice(0, 8);
+  const typeReason = scoreType === "Submission-ready" ? [] : [`Score type is ${scoreType}, so the project is not yet submission-ready under the strict rubric.`];
+  return [...new Set([...typeReason, ...capReasons, ...missing])];
 }
 
 function strictRubricDimensions(input: StrictScoreInput): ScoreDimension[] {
@@ -308,6 +348,12 @@ function clampConfidence(value: number): number {
 
 function missingWhen(condition: boolean, value: string): string[] {
   return condition ? [value] : [];
+}
+
+function dimensionEvidenceSummary(dimension: ScoreDimension): string {
+  const positive = dimension.positiveEvidence.length ? `positive: ${dimension.positiveEvidence.join("; ")}` : "positive: none";
+  const negative = dimension.negativeEvidence.length ? `negative: ${dimension.negativeEvidence.join("; ")}` : "negative: none";
+  return `${positive}; ${negative}`;
 }
 
 function escapeCell(value: string): string {

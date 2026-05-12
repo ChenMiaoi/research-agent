@@ -64,6 +64,7 @@ export type ScoreSnapshot = {
   source: "strict_ccf_a";
   score: number;
   max_score: number;
+  score_type: StrictScoreResult["score_type"];
   confidence: number;
   dimensions: ScoreDimensionSnapshot[];
   hard_blockers: string[];
@@ -228,6 +229,7 @@ export function scoreSnapshotFromStrictScore(input: {
     source: "strict_ccf_a",
     score: input.score.total,
     max_score: 100,
+    score_type: input.score.score_type,
     confidence,
     dimensions: input.score.score_dimensions?.length
       ? input.score.score_dimensions.map((dimension) => ({

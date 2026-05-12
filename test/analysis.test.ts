@@ -225,6 +225,7 @@ test("strict CCF-A score applies all evidence cap rules", () => {
   const cases: Array<[string, Parameters<typeof strictCcfAScore>[0], number, string]> = [
     ["No verified related work", { pdfReadCount: 1, corePaperCount: 5, hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true }, 45, "No verified related work"],
     ["No PDF read", { verifiedRelatedWorkCount: 5, corePaperCount: 5, hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true }, 45, "No PDF read"],
+    ["CCF-A venue gate blocked", { verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, ccfAGateBlocked: true, hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true }, 55, "CCF-A venue gate blocked"],
     ["No CCF-A core papers", { verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 0, hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true }, 55, "No CCF-A core papers"],
     ["No baseline/dataset/metric", { verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, hasExecutableExperimentPlan: true }, 60, "No baseline/dataset/metric"],
     ["High prior-work collision", { verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true, highPriorWorkCollision: true }, 40, "High prior-work collision"],
@@ -241,6 +242,10 @@ test("strict CCF-A score applies all evidence cap rules", () => {
     assert.ok(score.caps.some((item) => item.reason === reason));
     assert.ok(score.hard_blockers.includes(reason));
   }
+  assert.equal(strictCcfAScore({ verifiedRelatedWorkCount: 0, pdfReadCount: 0, corePaperCount: 5 }).score_type, "Preliminary");
+  assert.equal(strictCcfAScore({ verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, ccfAGateBlocked: true }).score_type, "Preliminary");
+  assert.equal(strictCcfAScore({ verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, hasStrongBaseline: true, hasDatasetOrBenchmark: false, hasMetric: true, hasExecutableExperimentPlan: true }).score_type, "Evidence-backed");
+  assert.equal(strictCcfAScore({ verifiedRelatedWorkCount: 5, pdfReadCount: 5, corePaperCount: 5, evidenceRefs: ["e1", "e2"], hasStrongBaseline: true, hasDatasetOrBenchmark: true, hasMetric: true, hasExecutableExperimentPlan: true, hasScientificHypothesis: true }).score_type, "Submission-ready");
 });
 
 test("strict CCF-A score reports evidence-backed dimensions and target paths", () => {
@@ -274,8 +279,10 @@ test("strict CCF-A score reports evidence-backed dimensions and target paths", (
   assert.ok(Object.hasOwn(score.dimensions, "problem_significance"));
   assert.ok(Object.hasOwn(score.dimensions, "experimental_rigor"));
   assert.ok(Object.hasOwn(score.dimensions, "venue_story"));
+  assert.equal(score.score_type, "Evidence-backed");
   assert.ok(score.confidence > 0 && score.confidence <= 0.9);
   assert.ok(score.hard_blockers.includes("No baseline/dataset/metric"));
+  assert.ok(score.why_not_ccf_a.some((reason) => /No baseline\/dataset\/metric|not yet submission-ready/i.test(reason)));
   assert.ok(score.soft_weaknesses.length > 0);
   assert.ok(score.path_to_70.some((action) => /dataset|benchmark|experiment|related/i.test(action)));
   assert.ok(score.path_to_80.some((action) => /ablations|provenance|related|dataset|experiment/i.test(action)));
@@ -287,9 +294,13 @@ test("strict CCF-A score reports evidence-backed dimensions and target paths", (
   assert.equal(score.score_dimensions.flatMap((dimension) => dimension.positiveEvidence).every((ref) => /^e\d+$/.test(ref)), true);
   assert.equal(score.score_dimensions.flatMap((dimension) => dimension.negativeEvidence).length, 0);
   const markdown = strictScoreMarkdown(score);
+  assert.match(markdown, /Score type: Evidence-backed/);
+  assert.match(markdown, /## Active Caps/);
   assert.match(markdown, /Strict Rubric/);
-  assert.match(markdown, /Possible Path To 70\+/);
-  assert.match(markdown, /Possible Path To 80\+/);
+  assert.match(markdown, /\| Dimension \| Score \| Confidence \| Evidence \| Missing \| Rationale \|/);
+  assert.match(markdown, /## Why not CCF-A/);
+  assert.match(markdown, /## Path to 70/);
+  assert.match(markdown, /## Path to 80/);
 });
 
 test("papers analyze score and refine CLI write analysis artifacts", async () => {
@@ -305,8 +316,9 @@ test("papers analyze score and refine CLI write analysis artifacts", async () =>
     assert.equal(await main(["refine", "--output", output, "--resource", "single researcher"]), 0);
     const scorecard = await readFile(join(output, "docs/diagnosis/ccf_a_strict_scorecard.md"), "utf8");
     assert.match(scorecard, /CCF-A Strict Scorecard/);
+    assert.match(scorecard, /Score type: Preliminary/);
     assert.match(scorecard, /Strict Rubric/);
-    assert.match(scorecard, /Possible Path To 70\+/);
+    assert.match(scorecard, /Path to 70/);
     assert.match(scorecard, /No verified related work/);
     assert.match(await readFile(join(output, "docs/proposal/revised_idea.md"), "utf8"), /Revised Idea/);
     assert.match(await readFile(join(output, "docs/relative_work/novelty_gap_matrix.md"), "utf8"), /Novelty Gap Matrix/);
