@@ -23,7 +23,7 @@ export function buildRelatedWorkSurvey(input: {
 }): RelatedWorkSurvey {
   const rows = verifiedRows(input.evidenceRows, input.chunks, input.noteArtifacts);
   const candidatesByPaper = new Map(input.candidates.map((candidate) => [safePaperId(candidate.candidate_id), candidate]));
-  const clusters = clusterDefinitions(input.ideaBrief, input.searchPlan).map((cluster) => {
+  const clusters = relatedWorkClusters(input.ideaBrief, input.searchPlan, input.agentRelatedWork).map((cluster) => {
     const matches = rows.filter((row) => cluster.terms.some((term) => evidenceText(row).includes(term))).slice(0, 8);
     return { ...cluster, rows: matches };
   });
@@ -101,6 +101,25 @@ function clusterDefinitions(brief: IdeaBrief, plan: SearchPlan): Array<{ name: s
   ];
 }
 
+function relatedWorkClusters(
+  brief: IdeaBrief,
+  plan: SearchPlan,
+  agentRelatedWork: RelatedWorkAnalysis | null | undefined
+): Array<{ name: string; terms: string[] }> {
+  const agentClusters = (agentRelatedWork?.topic_clusters ?? [])
+    .map((cluster, index) => {
+      const values = Object.values(cluster).map((value) => value.trim()).filter(Boolean);
+      if (!values.length) return null;
+      const name = cluster.name || cluster.cluster || cluster.topic || `Agent Cluster ${index + 1}`;
+      return {
+        name,
+        terms: termsFromText(values.join(" "))
+      };
+    })
+    .filter((cluster): cluster is { name: string; terms: string[] } => Boolean(cluster?.terms.length));
+  return agentClusters.length ? agentClusters : clusterDefinitions(brief, plan);
+}
+
 function verifiedRows(rows: ClaimEvidenceRow[], chunks: PdfChunkIndexEntry[] | undefined, noteArtifacts: Record<string, string> | undefined): ClaimEvidenceRow[] {
   const trusted = chunks ? trustedEvidenceRows(rows, chunks) : rows;
   const notePaths = Object.keys(noteArtifacts ?? {}).filter((path) => /^docs\/reference\/paper_notes\/.+\.md$/.test(path));
@@ -126,6 +145,10 @@ function signals(rows: ClaimEvidenceRow[], terms: string[], candidatesByPaper: M
 
 function evidenceText(row: ClaimEvidenceRow): string {
   return `${row.claim_type} ${row.claim} ${row.quote ?? ""} ${row.section ?? ""}`.toLowerCase();
+}
+
+function termsFromText(value: string): string[] {
+  return unique(value.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter((term) => term.length > 3));
 }
 
 function evidenceSummary(row: ClaimEvidenceRow): string {

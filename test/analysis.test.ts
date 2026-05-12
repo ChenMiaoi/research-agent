@@ -184,6 +184,27 @@ test("survey and idea-vs-prior use only verified note-backed evidence", () => {
   });
   assert.deepEqual(agentOnlySignals.reviewerExpectedBaselines, []);
   assert.deepEqual(agentOnlySignals.reviewerExpectedMetrics, []);
+  const agentClusterSurvey = buildRelatedWorkSurvey({
+    ideaBrief: sampleIdeaBrief(),
+    searchPlan: sampleSearchPlan(),
+    candidates: [candidates[0]!],
+    evidenceRows: [evidence("paper1", "Verified agent benchmark evidence supports adaptive memory evaluation.")],
+    noteArtifacts: {
+      "docs/reference/paper_notes/paper1.md": "evidence_status = verified\n"
+    },
+    agentRelatedWork: {
+      topic_clusters: [{ name: "Adaptive Memory Evaluation", summary: "adaptive memory evaluation cluster" }],
+      related_work_matrix_rows: [],
+      reviewer_expected_baselines: ["Agent-proposed baseline must not count"],
+      evaluation_conventions: ["Agent-proposed metric must not count"],
+      evidence_warnings: []
+    }
+  });
+  assert.match(agentClusterSurvey.markdown, /Cluster 1: Adaptive Memory Evaluation/);
+  assert.doesNotMatch(agentClusterSurvey.markdown, /adaptive memory evaluation cluster/);
+  assert.doesNotMatch(agentClusterSurvey.markdown, /Agent-proposed baseline must not count/);
+  assert.doesNotMatch(agentClusterSurvey.markdown, /Agent-proposed metric must not count/);
+  assert.match(agentClusterSurvey.markdown, /Verified Agent Benchmark/);
   const metadataOnlySurvey = buildRelatedWorkSurvey({
     ideaBrief: sampleIdeaBrief(),
     searchPlan: sampleSearchPlan(),
@@ -208,6 +229,18 @@ test("survey and idea-vs-prior use only verified note-backed evidence", () => {
   assert.match(ideaVsPrior.markdown, /Verified Agent Benchmark/);
   assert.doesNotMatch(ideaVsPrior.markdown, /Metadata Only Benchmark/);
   assert.equal(ideaVsPrior.collisionRisk, "high");
+  const groupedIdeaVsPrior = buildIdeaVsPriorWork({
+    idea: "agent benchmark baseline dataset accuracy metric",
+    candidates,
+    evidenceRows: [
+      evidence("paper1", "This benchmark describes a baseline."),
+      evidence("paper1", "This benchmark describes a dataset and accuracy metric.")
+    ],
+    novelty,
+    noteArtifacts
+  });
+  assert.equal(groupedIdeaVsPrior.rows.length, 1);
+  assert.match(groupedIdeaVsPrior.markdown, /p\.1\/chunk p1-c1/);
   const metadataOnlyPrior = buildIdeaVsPriorWork({
     idea: "agent benchmark baseline dataset accuracy metric",
     candidates,

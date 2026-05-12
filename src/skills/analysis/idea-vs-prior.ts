@@ -27,17 +27,23 @@ export function buildIdeaVsPriorWork(input: {
   const rows = verifiedRows(input.evidenceRows, input.chunks, input.noteArtifacts);
   const candidatesByPaper = new Map(input.candidates.map((candidate) => [safePaperId(candidate.candidate_id), candidate]));
   const ideaTerms = terms(input.idea);
-  const matrixRows = rows.map((row) => {
-    const candidate = candidatesByPaper.get(row.paper_id);
-    const score = overlap(ideaTerms, `${row.claim} ${row.quote ?? ""}`);
-    const risk = rowRisk(score, row, input.novelty);
+  const rowsByPaper = groupRowsByPaper(rows);
+  const matrixRows = [...rowsByPaper.entries()].map(([paperId, paperRows]) => {
+    const candidate = candidatesByPaper.get(paperId);
+    const scoredRows = paperRows.map((row) => {
+      const score = overlap(ideaTerms, `${row.claim} ${row.quote ?? ""}`);
+      return { row, score, risk: rowRisk(score, row, input.novelty) };
+    });
+    const highest = highestRiskRow(scoredRows);
+    const score = Math.max(...scoredRows.map((item) => item.score), 0);
+    const risk = highest?.risk ?? "low";
     return {
-      paperId: row.paper_id,
-      priorWork: candidate?.title ?? row.paper_id,
-      similarity: similarityText(score, row),
-      difference: differenceText(input.novelty, row),
+      paperId,
+      priorWork: candidate?.title ?? paperId,
+      similarity: similarityText(score, paperRows),
+      difference: differenceText(input.novelty, paperRows),
       collisionRisk: risk,
-      requiredFix: requiredFix(risk, row)
+      requiredFix: requiredFix(risk, highest?.row ?? paperRows[0]!)
     };
   });
   const collisionRisk = combinedRisk(matrixRows.map((row) => row.collisionRisk), input.novelty.collision_risk);
@@ -75,6 +81,17 @@ function verifiedRows(rows: ClaimEvidenceRow[], chunks: PdfChunkIndexEntry[] | u
   );
 }
 
+function groupRowsByPaper(rows: ClaimEvidenceRow[]): Map<string, ClaimEvidenceRow[]> {
+  const grouped = new Map<string, ClaimEvidenceRow[]>();
+  for (const row of rows) grouped.set(row.paper_id, [...(grouped.get(row.paper_id) ?? []), row]);
+  return grouped;
+}
+
+function highestRiskRow(rows: Array<{ row: ClaimEvidenceRow; score: number; risk: "high" | "medium" | "low" }>): { row: ClaimEvidenceRow; score: number; risk: "high" | "medium" | "low" } | null {
+  const rank = { high: 2, medium: 1, low: 0 } as const;
+  return [...rows].sort((left, right) => rank[right.risk] - rank[left.risk] || right.score - left.score)[0] ?? null;
+}
+
 function rowRisk(score: number, row: ClaimEvidenceRow, novelty: NoveltyAssessment): "high" | "medium" | "low" {
   if (novelty.collision_risk === "high" && score > 0.3) return "high";
   if (score > 0.45) return "high";
@@ -88,14 +105,18 @@ function combinedRisk(risks: Array<"high" | "medium" | "low">, noveltyRisk: Nove
   return "low";
 }
 
-function similarityText(score: number, row: ClaimEvidenceRow): string {
+function similarityText(score: number, rows: ClaimEvidenceRow[]): string {
   const bucket = score > 0.45 ? "High lexical overlap" : score > 0.2 ? "Moderate overlap" : "Low direct overlap";
-  return `${bucket}; evidence page ${row.page}, chunk ${row.chunk_id}`;
+  const refs = rows.map((row) => `p.${row.page}/chunk ${row.chunk_id}`).join("; ");
+  return `${bucket}; evidence refs ${refs}`;
 }
 
-function differenceText(novelty: NoveltyAssessment, row: ClaimEvidenceRow): string {
-  const matchingDelta = novelty.dimension_deltas.find((delta) => delta.evidence_refs.some((ref) => ref.paper_id === row.paper_id && ref.chunk_id === row.chunk_id));
-  return matchingDelta?.idea_delta ?? "Difference must be stated against this verified evidence row.";
+function differenceText(novelty: NoveltyAssessment, rows: ClaimEvidenceRow[]): string {
+  const matchingDeltas = novelty.dimension_deltas.filter((delta) =>
+    delta.evidence_refs.some((ref) => rows.some((row) => ref.paper_id === row.paper_id && ref.chunk_id === row.chunk_id))
+  );
+  const deltas = [...new Set(matchingDeltas.map((delta) => delta.idea_delta).filter(Boolean))];
+  return deltas.join("; ") || "Difference must be stated against this verified paper-note evidence.";
 }
 
 function requiredFix(risk: "high" | "medium" | "low", row: ClaimEvidenceRow): string {
